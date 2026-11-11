@@ -1,0 +1,13 @@
+# Base dependencies for the project
+pytest
+requests
+python-dotenv
+
+# Coinbase SDK for interacting with the Coinbase Data Platform
+coinbase-advanced-py
+
+apscheduler
+fastapi
+uvicorn
+pydantic
+google-auth
