@@ -20,13 +20,13 @@ import os
 from src.coinbase import CoinbaseClient
 
 client = CoinbaseClient(os.environ["COINBASE_API_KEY"], os.environ["COINBASE_API_SECRET"])
-portfolios = client.get_portfolios()
-wallets = client.get_user_accounts()  # optionally pass a retail portfolio ID
+portfolios = client.get_user_portfolios()  # optionally pass a retail portfolio ID
+wallets = [wallet for portfolio in portfolios for wallet in portfolio.wallets]
 orders = client.get_orders()          # optionally pass a retail portfolio ID
 watchlist = client.get_watchlist_movement(["BTC-USDC", "ETH-USDC"])
 ```
 
-To print the wallet summary directly, set `COINBASE_API_KEY` and
+To print the portfolio and order summary directly, set `COINBASE_API_KEY` and
 `COINBASE_API_SECRET` in the environment or the project-root `.env` file, then
 run:
 
@@ -37,7 +37,9 @@ python .\scripts\coinbase_account_summary.py
 The script loads `.env` without overriding existing environment variables.
 
 Portfolios correspond to Coinbase **retail portfolios**, not the Coinbase
-login profile. Each portfolio total sums current crypto wallet balances
+login profile. `get_user_portfolios` includes each wallet's identity, currency,
+available balance, hold, active/ready status, USDC valuation and weekly movement
+in `portfolio.wallets`. Each portfolio total sums current crypto wallet balances
 (available plus held) in USDC; fiat wallets are excluded with a warning and
 derivatives are not included. Weekly wallet
 and portfolio changes reprice **today's quantities** at market prices from
@@ -75,5 +77,5 @@ than returned as empty results.
 Run the offline tests with:
 
 ```console
-python -m unittest discover -s src/tests -p "test_coinbase.py"
+python -m unittest discover -s src/tests -p "test_coinbase*.py"
 ```

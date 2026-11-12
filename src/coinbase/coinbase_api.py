@@ -179,7 +179,7 @@ class CoinbaseClient:
         cache[currency] = rates
         return rates
 
-    def get_user_accounts(
+    def _get_wallets(
         self, retail_portfolio_id: str | None = None, *, as_of: datetime | None = None
     ) -> list[CoinbaseCrypto]:
         """Return crypto wallets, including holds, with seven-day USDC estimates."""
@@ -229,14 +229,24 @@ class CoinbaseClient:
             ))
         return wallets
 
-    def get_portfolios(self, *, as_of: datetime | None = None) -> list[CoinbaseAccount]:
-        """Return Coinbase retail portfolios with their crypto wallets and USDC estimates."""
+    def get_user_portfolios(
+        self, retail_portfolio_id: str | None = None, *, as_of: datetime | None = None
+    ) -> list[CoinbaseAccount]:
+        """Return portfolios with wallet balances, holds and seven-day USDC estimates.
+
+        Optionally select a retail portfolio ID before valuing its wallets.
+        """
         now = _now(as_of)
         response = self._call("portfolios", self.client.get_portfolios).to_dict()
         portfolios = _required(response, "portfolios", "portfolios")
         if not isinstance(portfolios, list) or any(not isinstance(p, dict) for p in portfolios):
             raise CoinbaseClientError("Coinbase returned invalid portfolios")
-        wallets = self.get_user_accounts(as_of=now)
+        if retail_portfolio_id is not None:
+            portfolios = [
+                portfolio for portfolio in portfolios
+                if _required(portfolio, "uuid", "portfolio") == retail_portfolio_id
+            ]
+        wallets = self._get_wallets(retail_portfolio_id, as_of=now)
         ids = {_required(p, "uuid", "portfolio") for p in portfolios}
         unmatched = {wallet.retail_portfolio_id for wallet in wallets} - ids
         if unmatched:

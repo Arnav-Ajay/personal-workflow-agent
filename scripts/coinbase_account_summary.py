@@ -1,4 +1,4 @@
-"""Print the current Coinbase wallet summary."""
+"""Print the current Coinbase portfolio and order summary."""
 
 import os
 from pathlib import Path
@@ -33,17 +33,14 @@ def main() -> int:
         return 1
     try:
         client = CoinbaseClient(key, secret)
-        accounts = client.get_user_accounts()
-        portfolio = client.get_portfolios()
+        portfolios = client.get_user_portfolios()
         orders = client.get_orders()
     except CoinbaseClientError as exc:
         print(f"Coinbase summary failed: {exc}", file=sys.stderr)
         return 1
 
-    for account in accounts:
-        pprint(account)
-    print("\nPortfolio:")
-    for portfolio in portfolio:
+    print("Portfolios:")
+    for portfolio in portfolios:
         pprint(portfolio)
     print("\nOrders:")
     pprint(orders)

@@ -72,6 +72,9 @@ class CoinbaseTests(unittest.TestCase):
         self.sdk = Mock()
         self.client = CoinbaseClient.__new__(CoinbaseClient)
         self.client.client = self.sdk
+        self.sdk.get_portfolios.return_value = response(portfolios=[
+            {"uuid": "p1", "name": "Main"}, {"uuid": "p2", "name": "Other"}
+        ])
 
     def configure_market(self):
         prices = {"BTC-USDC": "100", "ETH-USDC": "200", "NMR-USDC": "10"}
@@ -106,9 +109,16 @@ class CoinbaseTests(unittest.TestCase):
             response(accounts=[wallet(), wallet("USDC", available="10", hold="2")], has_next=True, cursor="page2"),
             response(accounts=[wallet("ETH", available="2", hold="0")], has_next=False),
         ]
-        wallets = self.client.get_user_accounts(as_of=NOW)
+        wallets = self.client.get_user_portfolios(as_of=NOW)[0].wallets
         self.assertEqual(len(wallets), 3)
         btc, usdc, eth = wallets
+        self.assertEqual(
+            (btc.uuid, btc.name, btc.currency, btc.retail_portfolio_id),
+            ("p1-BTC", "BTC wallet", "BTC", "p1"),
+        )
+        self.assertEqual((btc.available_balance, btc.hold), (D("1"), D("0.5")))
+        self.assertTrue(btc.active)
+        self.assertTrue(btc.ready)
         self.assertEqual(btc.total_balance, D("1.5"))
         self.assertEqual(btc.value_usdc, D("150"))
         self.assertEqual(btc.previous_week_value_usdc, D("120"))
@@ -128,30 +138,47 @@ class CoinbaseTests(unittest.TestCase):
             wallet(), wallet("USDC", portfolio="p1", available="10", hold="0"),
             wallet("ETH", portfolio="p2", available="2", hold="0"),
         ], has_next=False)
-        main, other = self.client.get_portfolios(as_of=NOW)
+        main, other = self.client.get_user_portfolios(as_of=NOW)
         self.assertEqual((main.id, main.name, main.total_value_usdc), ("p1", "Main", D("160")))
         self.assertEqual((main.previous_week_value_usdc, main.weekly_change_usdc), (D("130"), D("30")))
         self.assertEqual(main.weekly_change_percent, D("30") / D("130") * 100)
         self.assertEqual(len(main.wallets), 2)
         self.assertEqual((other.id, other.total_value_usdc), ("p2", D("400")))
+        self.assertEqual([item.currency for item in other.wallets], ["ETH"])
+        self.sdk.get_portfolios.assert_called_once_with()
+        self.sdk.get_accounts.assert_called_once_with(cursor=None, limit=250)
 
     def test_unknown_portfolio_is_an_error(self):
         self.sdk.get_portfolios.return_value = response(portfolios=[])
         self.sdk.get_accounts.return_value = response(accounts=[wallet("USDC")], has_next=False)
         with self.assertRaisesRegex(CoinbaseClientError, "unknown portfolios"):
-            self.client.get_portfolios(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
 
     def test_portfolio_filter_skips_unrelated_assets(self):
         self.sdk.get_accounts.return_value = response(accounts=[
             wallet("USDC", portfolio="p1"), wallet("UNKNOWN", portfolio="p2")
         ], has_next=False)
-        result = self.client.get_user_accounts("p1", as_of=NOW)
-        self.assertEqual([x.currency for x in result], ["USDC"])
+        result = self.client.get_user_portfolios("p1", as_of=NOW)
+        self.assertEqual([portfolio.id for portfolio in result], ["p1"])
+        self.assertEqual([x.currency for x in result[0].wallets], ["USDC"])
         self.sdk.get_public_product.assert_not_called()
+
+    def test_portfolio_filter_without_match_returns_empty(self):
+        self.sdk.get_accounts.return_value = response(accounts=[wallet()], has_next=False)
+        self.assertEqual(self.client.get_user_portfolios("missing", as_of=NOW), [])
+        self.sdk.get_public_product.assert_not_called()
+
+    def test_invalid_portfolio_response_fails_explicitly(self):
+        for data in ({}, {"portfolios": {}}, {"portfolios": [None]}):
+            with self.subTest(data=data):
+                self.sdk.get_portfolios.return_value = response(**data)
+                with self.assertRaisesRegex(CoinbaseClientError, "portfolios"):
+                    self.client.get_user_portfolios(as_of=NOW)
+        self.sdk.get_accounts.assert_not_called()
 
     def test_zero_wallet_requires_no_market_and_zero_percent_is_undefined(self):
         self.sdk.get_accounts.return_value = response(accounts=[wallet("UNKNOWN", available="0", hold="0")], has_next=False)
-        item = self.client.get_user_accounts(as_of=NOW)[0]
+        item = self.client.get_user_portfolios(as_of=NOW)[0].wallets[0]
         self.assertEqual(item.value_usdc, D(0))
         self.assertIsNone(item.weekly_change_percent)
         self.sdk.get_public_product.assert_not_called()
@@ -159,7 +186,7 @@ class CoinbaseTests(unittest.TestCase):
     def test_price_cache_is_shared_by_wallets(self):
         self.configure_market()
         self.sdk.get_accounts.return_value = response(accounts=[wallet(), wallet(portfolio="p2")], has_next=False)
-        self.client.get_user_accounts(as_of=NOW)
+        self.client.get_user_portfolios(as_of=NOW)
         self.assertEqual(self.sdk.get_public_product.call_count, 1)
         self.assertEqual(self.sdk.get_public_candles.call_count, 1)
 
@@ -167,7 +194,7 @@ class CoinbaseTests(unittest.TestCase):
         self.sdk.get_accounts.return_value = response(accounts=[wallet("NMR")], has_next=False)
         self.sdk.get_public_product.side_effect = not_found()
         with self.assertRaises(CoinbaseClientError):
-            self.client.get_user_accounts(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
         self.assertEqual(
             [call.kwargs["product_id"] for call in self.sdk.get_public_product.call_args_list],
             ["NMR-USDC"],
@@ -177,7 +204,7 @@ class CoinbaseTests(unittest.TestCase):
         self.sdk.get_accounts.return_value = response(accounts=[wallet()], has_next=False)
         self.sdk.get_public_product.side_effect = Timeout("network timeout")
         with self.assertRaisesRegex(CoinbaseClientError, "network timeout"):
-            self.client.get_user_accounts(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
         self.assertEqual(self.sdk.get_public_product.call_count, 1)
 
     def test_fiat_wallets_are_excluded_with_warning(self):
@@ -187,7 +214,7 @@ class CoinbaseTests(unittest.TestCase):
             wallet("USDC", available="5", hold="1"),
         ], has_next=False)
         with self.assertLogs("src.coinbase.coinbase_api", level="WARNING") as logs:
-            wallets = self.client.get_user_accounts(as_of=NOW)
+            wallets = self.client.get_user_portfolios(as_of=NOW)[0].wallets
         self.assertEqual([item.currency for item in wallets], ["USDC"])
         self.assertEqual(wallets[0].value_usdc, D("6"))
         self.assertEqual(len(logs.records), 2)
@@ -200,7 +227,7 @@ class CoinbaseTests(unittest.TestCase):
             wallet("USDC", available="25", hold="0"),
         ], has_next=False)
         with self.assertLogs("src.coinbase.coinbase_api", level="WARNING"):
-            portfolio = self.client.get_portfolios(as_of=NOW)[0]
+            portfolio = self.client.get_user_portfolios(as_of=NOW)[0]
         self.assertEqual(portfolio.total_value_usdc, D("25"))
         self.assertEqual([item.currency for item in portfolio.wallets], ["USDC"])
 
@@ -211,14 +238,14 @@ class CoinbaseTests(unittest.TestCase):
                     accounts=[wallet(type=kind)], has_next=False
                 )
                 with self.assertRaises(CoinbaseClientError):
-                    self.client.get_user_accounts(as_of=NOW)
+                    self.client.get_user_portfolios(as_of=NOW)
 
     def test_nmr_usdc_market_and_vault_balance(self):
         self.configure_market()
         self.sdk.get_accounts.return_value = response(accounts=[
             wallet("NMR", available="2", hold="1", type="ACCOUNT_TYPE_VAULT")
         ], has_next=False)
-        item = self.client.get_user_accounts(as_of=NOW)[0]
+        item = self.client.get_user_portfolios(as_of=NOW)[0].wallets[0]
         self.assertEqual((item.value_usdc, item.previous_week_value_usdc, item.weekly_change_usdc),
                          (D("30"), D("24"), D("6")))
         self.sdk.get_public_product.assert_called_once_with(product_id="NMR-USDC")
@@ -228,35 +255,35 @@ class CoinbaseTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.sdk.get_accounts.return_value = response(accounts=[wallet(available=value, hold="0")], has_next=False)
                 with self.assertRaises(CoinbaseClientError):
-                    self.client.get_user_accounts(as_of=NOW)
+                    self.client.get_user_portfolios(as_of=NOW)
         self.sdk.get_accounts.return_value = response(accounts=[wallet(available_balance=None)], has_next=False)
         with self.assertRaisesRegex(CoinbaseClientError, "available_balance"):
-            self.client.get_user_accounts(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
         mismatch = wallet()
         mismatch["hold"] = {"value": "1", "currency": "ETH"}
         self.sdk.get_accounts.return_value = response(accounts=[mismatch], has_next=False)
         with self.assertRaisesRegex(CoinbaseClientError, "mismatched"):
-            self.client.get_user_accounts(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
 
     def test_repeated_and_missing_cursors_are_errors(self):
         for cursor in (None, "again"):
             with self.subTest(cursor=cursor):
                 self.sdk.get_accounts.return_value = response(accounts=[], has_next=True, cursor=cursor)
                 with self.assertRaisesRegex(CoinbaseClientError, "cursor"):
-                    self.client.get_user_accounts(as_of=NOW)
+                    self.client.get_user_portfolios(as_of=NOW)
 
     def test_missing_api_data_is_not_an_empty_success(self):
         self.sdk.get_accounts.return_value = response()
         with self.assertRaisesRegex(CoinbaseClientError, "accounts"):
-            self.client.get_user_accounts(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
         self.sdk.get_accounts.side_effect = Timeout("unavailable")
         with self.assertRaisesRegex(CoinbaseClientError, "unavailable"):
-            self.client.get_user_accounts(as_of=NOW)
+            self.client.get_user_portfolios(as_of=NOW)
 
     def test_empty_portfolio_has_no_percent_change(self):
         self.sdk.get_portfolios.return_value = response(portfolios=[{"uuid": "p1", "name": "Empty"}])
         self.sdk.get_accounts.return_value = response(accounts=[], has_next=False)
-        result = self.client.get_portfolios(as_of=NOW)[0]
+        result = self.client.get_user_portfolios(as_of=NOW)[0]
         self.assertEqual(result.total_value_usdc, D(0))
         self.assertIsNone(result.weekly_change_percent)
 
@@ -354,7 +381,7 @@ class CoinbaseTests(unittest.TestCase):
             "orders": [order("a", "OPEN", order_configuration={"limit_limit_gtc": {"base_size": "2"}})],
             "has_next": False,
         })
-        self.assertEqual(self.client.get_portfolios(as_of=NOW)[0].total_value_usdc, D("7"))
+        self.assertEqual(self.client.get_user_portfolios(as_of=NOW)[0].total_value_usdc, D("7"))
         self.assertEqual(
             self.client.get_orders(as_of=NOW).in_progress[0].order_configuration,
             {"limit_limit_gtc": {"base_size": "2"}},
@@ -418,7 +445,7 @@ class CoinbaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.get_watchlist_movement([""], as_of=NOW)
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
-            self.client.get_user_accounts(as_of=NOW.replace(tzinfo=None))
+            self.client.get_user_portfolios(as_of=NOW.replace(tzinfo=None))
 
 
 if __name__ == "__main__":
