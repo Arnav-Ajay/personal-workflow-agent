@@ -26,7 +26,7 @@ orders = client.get_orders()          # optionally pass a retail portfolio ID
 watchlist = client.get_watchlist_movement(["BTC-USDC", "ETH-USDC"])
 ```
 
-To print the portfolio and order summary directly, set `COINBASE_API_KEY` and
+To fetch and save the latest portfolio and order snapshot, set `COINBASE_API_KEY` and
 `COINBASE_API_SECRET` in the environment or the project-root `.env` file, then
 run:
 
@@ -35,6 +35,59 @@ python .\scripts\coinbase_account_summary.py
 ```
 
 The script loads `.env` without overriding existing environment variables.
+It is the main Coinbase entry point and returns a nonzero exit code on fetch,
+serialization, logging setup, or artifact write failure. It prints the saved
+manifest path on success. Portfolios and orders share one UTC reference time.
+
+The latest manifest is `src/artifacts/coinbase/manifest.json`; its artifact path
+points to a complete snapshot in `snapshots/<snapshot_id>.json`. Manifest metadata
+includes counts, checksum, byte size, schema version, UTC timestamps, and trace ID.
+Failed runs preserve the previous manifest; previous snapshots are retained.
+Read [the artifact format](src/artifacts/README.md) for serialization details.
+Shared artifact helpers live in `src/commons`.
+
+Structured JSON logs (one JSON object per line) and timed trace events are written to
+`src/artifacts/coinbase/log.json` and stderr. Traces cover the run,
+credential loading, Coinbase components, each API request, and artifact saving.
+Trace and parent span IDs link events together; failed spans record error types
+without logging exception payloads or credentials. Log files rotate at 5 MB with
+three backups. Generated snapshots and logs are ignored by Git.
+
+Optional output locations and watchlist products:
+
+```powershell
+python .\scripts\coinbase_account_summary.py --artifacts-dir .\src\artifacts\coinbase --log-dir .\src\artifacts\coinbase --watchlist BTC-USDC ETH-USDC
+```
+
+### Local HTML dashboard
+
+Render the latest saved snapshot, then open the resulting HTML file:
+
+```powershell
+python .\scripts\coinbase_dashboard.py
+Start-Process .\src\artifacts\coinbase\report.html
+```
+
+The dashboard shows portfolio totals and allocation, per-wallet quantities and
+holds, in-progress orders, recently filled orders, and watchlist movement. It
+reads the manifest and verifies the snapshot's checksum and identity before
+rendering. It uses saved artifacts only; no API credentials, web server, browser
+JavaScript, or external assets are needed. Run the renderer again after fetching
+a new snapshot to refresh the report. A failed render preserves the previous HTML.
+
+Use `--artifacts-dir`, `--output path/to/report.html`, or `--log-dir` to change
+locations. Logs default to `<artifacts-dir>/log.json`; `--log-dir` overrides only
+the log directory. The default output is `<artifacts-dir>/report.html`. The layout adapts
+to mobile screens and printing, and large data tables scroll horizontally.
+
+The reusable body is `src.coinbase.reporting.render_coinbase_body(snapshot)`;
+shared HTML components and the document template live in `src/commons/reporting.py`
+and `src/commons/templates/summary.html`. Core tables and styles are inline so
+the same report sections can later be composed into weekly emails. Email sending
+is not part of this command. Weekly figures describe estimated market movement
+of current quantities, not actual profit/loss. Order values retain their product's
+quote units; portfolio values use USDC. Hover over numbers to see exact saved
+values where the displayed amount is rounded.
 
 Portfolios correspond to Coinbase **retail portfolios**, not the Coinbase
 login profile. `get_user_portfolios` includes each wallet's identity, currency,
@@ -72,10 +125,13 @@ their percentage changes compare the current price to prices approximately
 their actual product and quote currency, including non-USDC products. `as_of`, when supplied, sets the
 timezone-aware reference time for those windows; current prices are still live,
 so it is not a backtesting interface. API and data errors are surfaced rather
-than returned as empty results.
+than returned as empty results. Responses requiring additional authentication
+also raise `CoinbaseClientError`. Duplicate wallet or portfolio IDs are rejected
+to prevent inflated totals. Pagination streams one page at a time, and repeated
+watchlist products reuse prices within each call while preserving input order.
 
 Run the offline tests with:
 
 ```console
-python -m unittest discover -s src/tests -p "test_coinbase*.py"
+python -m unittest discover -s src/tests
 ```

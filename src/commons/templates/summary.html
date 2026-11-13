@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>$title</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    ::selection { background: #d5e3fc; }
+    a:focus-visible, [tabindex]:focus-visible { outline: 3px solid #467cf2; outline-offset: 4px; }
+    @media (max-width: 650px) {
+      .report { padding: 26px 16px !important; }
+      .hero-title { font-size: 36px !important; }
+      .metrics td { display: block !important; width: 100% !important; padding: 10px 0 !important; border-right: 0 !important; }
+      .summary-value { font-size: 38px !important; }
+    }
+    @media print {
+      body { background: white !important; }
+      .report { max-width: none !important; padding: 0 !important; }
+      section, tr { break-inside: avoid; }
+      div[role=region] { overflow: visible !important; }
+      th, td { padding: 8px !important; font-size: 10px !important; }
+    }
+  </style>
+</head>
+<body style="background:#f3f5f7;color:#172638;font-family:Arial,Helvetica,sans-serif;">
+  <main class="report" style="max-width:1060px;margin:0 auto;padding:46px 34px 36px;">
+    <header style="border-bottom:1px solid #dce3e9;padding-bottom:22px;margin-bottom:32px;">
+      <table role="presentation" style="width:100%;border-collapse:collapse;"><tr>
+        <td style="font-size:12px;font-weight:700;letter-spacing:1.5px;">WORKFLOW<span style="color:#5279c4;"> / </span>PORTFOLIO</td>
+        <td style="text-align:right;font-size:11px;color:#687787;">COINBASE REPORT</td>
+      </tr></table>
+    </header>
+    <p style="font-size:10px;letter-spacing:2px;color:#5279c4;font-weight:700;margin:0 0 14px;">YOUR FINANCIAL CHECK-IN</p>
+    <h1 class="hero-title" style="font-family:Georgia,'Times New Roman',serif;font-weight:400;font-size:48px;line-height:1.1;letter-spacing:-2px;margin:0 0 16px;">Your portfolio, at a glance.</h1>
+    <p style="color:#687787;font-size:13px;line-height:1.7;margin:0 0 28px;">A clear view of your holdings, orders, and market movement.<br>Snapshot as of <strong style="color:#344760;">$as_of</strong></p>
+    $body
+    <footer style="margin-top:34px;padding-top:24px;border-top:1px solid #dce3e9;color:#687787;font-size:11px;line-height:1.8;">
+      <p style="margin:0 0 10px;"><strong style="color:#344760;">About these numbers</strong><br>Weekly movement reprices current quantities at prices from seven days earlier. It is an estimate of market movement, not profit/loss or the historical value of your account. Crypto balances include available and held funds; fiat and derivatives are excluded from portfolio totals. USDC is valued at face value.</p>
+      <p style="margin:0;overflow-wrap:anywhere;">Snapshot: $snapshot_id<br>Trace: $trace_id</p>
+      <p style="margin:16px 0 0;font-size:10px;letter-spacing:1px;">PERSONAL WORKFLOW AGENT &nbsp; / &nbsp; SAVED SNAPSHOT</p>
+    </footer>
+  </main>
+</body>
+</html>

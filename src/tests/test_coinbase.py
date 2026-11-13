@@ -103,6 +103,14 @@ class CoinbaseTests(unittest.TestCase):
         factory.assert_called_once_with(api_key="key", api_secret="secret", timeout=30)
         self.assertIs(client.client, factory.return_value)
 
+    def test_invalid_credentials_raise_client_error(self):
+        for key, secret in ((" ", "secret"), ("key", "\t"), (None, "secret")):
+            with self.subTest(key=key, secret=secret), self.assertRaises(CoinbaseClientError):
+                CoinbaseClient(key, secret)
+        with patch("coinbase.rest.RESTClient", side_effect=ValueError("bad secret")):
+            with self.assertRaisesRegex(CoinbaseClientError, "invalid format"):
+                CoinbaseClient("key", "secret")
+
     def test_paginated_wallets_and_usdc_prices(self):
         self.configure_market()
         self.sdk.get_accounts.side_effect = [
@@ -287,6 +295,98 @@ class CoinbaseTests(unittest.TestCase):
         self.assertEqual(result.total_value_usdc, D(0))
         self.assertIsNone(result.weekly_change_percent)
 
+    def test_negative_balance_components_cannot_cancel_each_other(self):
+        for available, hold in (("-1", "2"), ("2", "-1"), ("-1", "1")):
+            with self.subTest(available=available, hold=hold):
+                self.sdk.get_accounts.return_value = response(
+                    accounts=[wallet("USDC", available=available, hold=hold)], has_next=False
+                )
+                with self.assertRaisesRegex(CoinbaseClientError, "negative balance"):
+                    self.client.get_user_portfolios(as_of=NOW)
+
+    def test_duplicate_wallet_across_pages_does_not_inflate_portfolio(self):
+        self.sdk.get_accounts.side_effect = [
+            response(accounts=[wallet("USDC")], has_next=True, cursor="next"),
+            response(accounts=[wallet("USDC")], has_next=False),
+        ]
+        with self.assertRaisesRegex(CoinbaseClientError, "duplicate wallet"):
+            self.client.get_user_portfolios(as_of=NOW)
+
+    def test_duplicate_portfolios_are_rejected_before_loading_wallets(self):
+        self.sdk.get_portfolios.return_value = response(portfolios=[
+            {"uuid": "p1", "name": "Main"}, {"uuid": "p1", "name": "Duplicate"}
+        ])
+        with self.assertRaisesRegex(CoinbaseClientError, "duplicate portfolio"):
+            self.client.get_user_portfolios(as_of=NOW)
+        self.sdk.get_accounts.assert_not_called()
+
+    def test_wallet_identity_and_flags_require_correct_types(self):
+        for changes in (
+            {"uuid": []}, {"retail_portfolio_id": {}}, {"currency": []},
+            {"type": []}, {"name": "   "}, {"active": "false"}, {"ready": 0},
+        ):
+            with self.subTest(changes=changes):
+                row = wallet("USDC")
+                row.update(changes)
+                self.sdk.get_accounts.return_value = response(accounts=[row], has_next=False)
+                with self.assertRaises(CoinbaseClientError):
+                    self.client.get_user_portfolios(as_of=NOW)
+        self.sdk.get_accounts.return_value = response(
+            accounts=[wallet("USDC", active=False, ready=False)], has_next=False
+        )
+        item = self.client.get_user_portfolios(as_of=NOW)[0].wallets[0]
+        self.assertIs(item.active, False)
+        self.assertIs(item.ready, False)
+
+    def test_malformed_sdk_responses_raise_client_errors(self):
+        for invalid in (None, Mock(to_dict=Mock(return_value=[]))):
+            with self.subTest(response=invalid):
+                self.sdk.get_portfolios.return_value = invalid
+                with self.assertRaises(CoinbaseClientError):
+                    self.client.get_user_portfolios(as_of=NOW)
+        for error in (ValueError("bad JSON"), TypeError("invalid data"), Exception("JWT signing failed")):
+            with self.subTest(error=error):
+                self.sdk.get_portfolios.side_effect = error
+                with self.assertRaises(CoinbaseClientError) as caught:
+                    self.client.get_user_portfolios(as_of=NOW)
+                self.assertIs(caught.exception.__cause__, error)
+
+    def test_orders_requiring_additional_authentication_are_not_empty_success(self):
+        self.sdk.list_orders.return_value = response(
+            orders=[], has_next=False, proof_token_required=True
+        )
+        with self.assertRaisesRegex(CoinbaseClientError, "additional authentication"):
+            self.client.get_orders(as_of=NOW)
+
+    def test_malformed_pagination_metadata_is_rejected(self):
+        for metadata in ({"has_next": "false"}, {"has_next": 0}, {"has_next": True, "cursor": []}):
+            with self.subTest(metadata=metadata):
+                self.sdk.get_accounts.return_value = response(accounts=[], **metadata)
+                with self.assertRaises(CoinbaseClientError):
+                    self.client.get_user_portfolios(as_of=NOW)
+
+    def test_invalid_order_identity_and_timestamps_raise_client_errors(self):
+        for changes in ({"order_id": []}, {"side": []}, {"status": []}, {"created_time": 123}):
+            with self.subTest(changes=changes):
+                row = order("open", "OPEN")
+                row.update(changes)
+                self.sdk.list_orders.return_value = response(orders=[row], has_next=False)
+                with self.assertRaises(CoinbaseClientError):
+                    self.client.get_orders(as_of=NOW)
+
+    def test_watchlist_reuses_prices_for_duplicate_products(self):
+        self.configure_market()
+        movements = self.client.get_watchlist_movement(["BTC-USDC", "ETH-USDC", "BTC-USDC"], as_of=NOW)
+        self.assertEqual([item.product_id for item in movements], ["BTC-USDC", "ETH-USDC", "BTC-USDC"])
+        self.assertEqual(movements[0], movements[2])
+        self.assertEqual(self.sdk.get_public_product.call_count, 2)
+        self.assertEqual(self.sdk.get_public_candles.call_count, 6)
+
+    def test_invalid_watchlist_is_validated_before_requests(self):
+        with self.assertRaises(ValueError):
+            self.client.get_watchlist_movement(["BTC-USDC", ""], as_of=NOW)
+        self.sdk.get_public_product.assert_not_called()
+
     def test_orders_use_fill_time_not_creation_time_and_paginate(self):
         start = (NOW - timedelta(days=7)).isoformat()
         def list_orders(**kwargs):
@@ -444,8 +544,9 @@ class CoinbaseTests(unittest.TestCase):
         self.assertEqual(self.client.get_watchlist_movement([], as_of=NOW), [])
         with self.assertRaises(ValueError):
             self.client.get_watchlist_movement([""], as_of=NOW)
-        with self.assertRaisesRegex(ValueError, "timezone-aware"):
-            self.client.get_user_portfolios(as_of=NOW.replace(tzinfo=None))
+        for as_of in (NOW.replace(tzinfo=None), "2026-11-11"):
+            with self.subTest(as_of=as_of), self.assertRaisesRegex(ValueError, "timezone-aware"):
+                self.client.get_user_portfolios(as_of=as_of)
 
 
 if __name__ == "__main__":
