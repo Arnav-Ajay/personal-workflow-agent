@@ -23,13 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output or args.artifacts_dir / "report.html"
     try:
         with configure_logging((args.log_dir or args.artifacts_dir) / "log.json"), trace("coinbase.dashboard"):
-            if output.suffix.lower() != ".html":
-                raise ValueError("Dashboard output must have an .html extension")
             snapshot = load_latest_snapshot(args.artifacts_dir, source="coinbase")
             report = render_coinbase_report(snapshot)
             save_html_report(output, report)
     except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
-        print(f"Coinbase dashboard failed: {exc}. Fetch a valid snapshot with scripts/coinbase_account_summary.py.", file=sys.stderr)
+        print(f"Coinbase dashboard failed: {exc}. Check the artifact and output paths; "
+              "fetch missing snapshots with scripts/coinbase_account_summary.py.", file=sys.stderr)
         return 1
     print(f"Coinbase dashboard saved: {output.resolve()}")
     return 0

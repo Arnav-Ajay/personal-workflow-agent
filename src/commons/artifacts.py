@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -18,30 +18,56 @@ from src.observability import trace
 logger = logging.getLogger(__name__)
 
 
+def _validate_envelope(value: Any, description: str) -> None:
+    """Validate shared metadata before trusting a manifest or snapshot."""
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise ValueError(f"Unsupported {description}")
+    for field in ("source", "snapshot_id", "trace_id"):
+        if field == "trace_id" and field in value and value[field] is None:
+            continue
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise ValueError(f"Invalid {description} {field}")
+    for field in ("as_of", "created_at"):
+        timestamp = value.get(field)
+        try:
+            if not isinstance(timestamp, str):
+                raise ValueError("Timestamp must be a string")
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("Timestamp must include a timezone")
+        except ValueError as exc:
+            raise ValueError(f"Invalid {description} {field}") from exc
+
+
 @trace("artifacts.load_latest_snapshot")
 def load_latest_snapshot(directory: Path, *, source: str | None = None) -> dict[str, Any]:
     """Read the manifest once and verify its referenced snapshot before use."""
     directory = directory.resolve()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
-        raise ValueError("Unsupported artifact manifest")
+    _validate_envelope(manifest, "artifact manifest")
+    if not isinstance(manifest.get("metadata"), dict):
+        raise ValueError("Manifest metadata must be an object")
     entries = manifest.get("artifacts")
     if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
         raise ValueError("Manifest must reference exactly one snapshot")
     entry = entries[0]
+    if (type(entry.get("size_bytes")) is not int or entry["size_bytes"] < 0 or
+            not isinstance(entry.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+        raise ValueError("Invalid snapshot size or checksum in manifest")
     if not isinstance(entry.get("path"), str) or not entry["path"]:
         raise ValueError("Manifest has an invalid snapshot path")
     path = (directory / entry["path"]).resolve()
     if not path.is_relative_to(directory):
         raise ValueError("Snapshot path must stay inside the artifact directory")
     content = path.read_bytes()
-    if entry.get("size_bytes") != len(content) or entry.get("sha256") != hashlib.sha256(content).hexdigest():
+    if entry["size_bytes"] != len(content) or entry["sha256"] != hashlib.sha256(content).hexdigest():
         raise ValueError("Snapshot size or checksum does not match its manifest")
     snapshot = json.loads(content)
-    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 1:
-        raise ValueError("Unsupported snapshot schema")
+    _validate_envelope(snapshot, "snapshot schema")
+    if not isinstance(snapshot.get("data"), dict):
+        raise ValueError("Snapshot data must be an object")
     for field in ("source", "snapshot_id", "trace_id", "as_of", "created_at"):
-        if field not in manifest or field not in snapshot or snapshot[field] != manifest[field]:
+        if snapshot[field] != manifest[field]:
             raise ValueError(f"Snapshot {field} does not match its manifest")
     if source is not None and snapshot["source"] != source:
         raise ValueError(f"Expected a {source} snapshot")
@@ -51,7 +77,7 @@ def load_latest_snapshot(directory: Path, *, source: str | None = None) -> dict[
 
 def _json_default(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
+        return {field.name: getattr(value, field.name) for field in fields(value)}
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValueError("Cannot serialize a non-finite Decimal")
@@ -68,7 +94,7 @@ def _encode(value: Any) -> bytes:
                        allow_nan=False) + "\n").encode("utf-8")
 
 
-def _atomic_write(path: Path, content: bytes) -> None:
+def atomic_write(path: Path, content: bytes) -> None:
     """Write beside the destination so replacement stays on the same filesystem."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -95,28 +121,32 @@ def save_snapshot(
     remain available, and a failed write never publishes a partial snapshot.
     Decimal values are strings to preserve precision. All timestamps use UTC.
     """
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", source):
+    if not isinstance(source, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", source):
         raise ValueError("source must be a simple component name")
     if not isinstance(as_of, datetime) or as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("as_of must be a timezone-aware datetime")
+    if not isinstance(data, dict) or (metadata is not None and not isinstance(metadata, dict)):
+        raise ValueError("Snapshot data and metadata must be objects")
+    if trace_id is not None and (not isinstance(trace_id, str) or not trace_id.strip()):
+        raise ValueError("trace_id must be a nonblank string or None")
     created_at = datetime.now(timezone.utc)
     snapshot_id = uuid4().hex
     relative_path = Path("snapshots") / f"{snapshot_id}.json"
-    snapshot = _encode({
-        "schema_version": 1, "source": source, "snapshot_id": snapshot_id,
-        "trace_id": trace_id, "as_of": as_of, "created_at": created_at, "data": data,
-    })
-    manifest = _encode({
+    envelope = {
         "schema_version": 1, "source": source, "snapshot_id": snapshot_id,
         "trace_id": trace_id, "as_of": as_of, "created_at": created_at,
+    }
+    snapshot = _encode({**envelope, "data": data})
+    manifest = _encode({
+        **envelope,
         "artifacts": [{
             "path": relative_path.as_posix(), "media_type": "application/json",
             "size_bytes": len(snapshot), "sha256": hashlib.sha256(snapshot).hexdigest(),
         }],
         "metadata": metadata or {},
     })
-    _atomic_write(directory / relative_path, snapshot)
+    atomic_write(directory / relative_path, snapshot)
     manifest_path = directory / "manifest.json"
-    _atomic_write(manifest_path, manifest)
+    atomic_write(manifest_path, manifest)
     logger.info("Published %s snapshot %s", source, snapshot_id)
     return manifest_path

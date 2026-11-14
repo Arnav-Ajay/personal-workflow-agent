@@ -17,13 +17,14 @@ the `.env` file or make requests.
 
 ```python
 import os
+from contextlib import closing
 from src.coinbase import CoinbaseClient
 
-client = CoinbaseClient(os.environ["COINBASE_API_KEY"], os.environ["COINBASE_API_SECRET"])
-portfolios = client.get_user_portfolios()  # optionally pass a retail portfolio ID
-wallets = [wallet for portfolio in portfolios for wallet in portfolio.wallets]
-orders = client.get_orders()          # optionally pass a retail portfolio ID
-watchlist = client.get_watchlist_movement(["BTC-USDC", "ETH-USDC"])
+with closing(CoinbaseClient(os.environ["COINBASE_API_KEY"], os.environ["COINBASE_API_SECRET"])) as client:
+    portfolios = client.get_user_portfolios()  # optionally pass a retail portfolio ID
+    wallets = [wallet for portfolio in portfolios for wallet in portfolio.wallets]
+    orders = client.get_orders()          # optionally pass a retail portfolio ID
+    watchlist = client.get_watchlist_movement(["BTC-USDC", "ETH-USDC"])
 ```
 
 To fetch and save the latest portfolio and order snapshot, set `COINBASE_API_KEY` and
@@ -38,6 +39,7 @@ The script loads `.env` without overriding existing environment variables.
 It is the main Coinbase entry point and returns a nonzero exit code on fetch,
 serialization, logging setup, or artifact write failure. It prints the saved
 manifest path on success. Portfolios and orders share one UTC reference time.
+The HTTP session is closed after fetching, including when a request fails.
 
 The latest manifest is `src/artifacts/coinbase/manifest.json`; its artifact path
 points to a complete snapshot in `snapshots/<snapshot_id>.json`. Manifest metadata
@@ -53,10 +55,15 @@ Trace and parent span IDs link events together; failed spans record error types
 without logging exception payloads or credentials. Log files rotate at 5 MB with
 three backups. Generated snapshots and logs are ignored by Git.
 
+The default watchlist is `BTC-USDC`, `ETH-USDC`, `NMR-USDC`, and `USDC-CAD`.
+Coinbase lists BTC, ETH, and NMR with USDC as the quote currency; `USDC-CAD`
+tracks CAD per USDC. The percentage changes retain each market's direction.
+`--watchlist` overrides this list; pass `--watchlist` alone to disable it.
+
 Optional output locations and watchlist products:
 
 ```powershell
-python .\scripts\coinbase_account_summary.py --artifacts-dir .\src\artifacts\coinbase --log-dir .\src\artifacts\coinbase --watchlist BTC-USDC ETH-USDC
+python .\scripts\coinbase_account_summary.py --artifacts-dir .\src\artifacts\coinbase --log-dir .\src\artifacts\coinbase --watchlist BTC-USDC ETH-USDC NMR-USDC USDC-CAD
 ```
 
 ### Local HTML dashboard
@@ -70,8 +77,16 @@ Start-Process .\src\artifacts\coinbase\report.html
 
 The dashboard shows portfolio totals and allocation, per-wallet quantities and
 holds, in-progress orders, recently filled orders, and watchlist movement. It
+includes a current price column for wallets (USDC per asset) and watchlist
+products (quote currency per base asset, such as CAD per USDC). These are saved
+snapshot prices, refreshed by the fetch script. Empty wallets also fetch current
+prices; retired assets without a market show an unavailable price. Older
+snapshots without saved prices remain readable and display a dash.
+The dashboard
 reads the manifest and verifies the snapshot's checksum and identity before
-rendering. It uses saved artifacts only; no API credentials, web server, browser
+rendering. Metadata types and timezone-aware timestamps are validated before
+rendering, and orders are sorted by their actual timestamps, including offsets.
+It uses saved artifacts only; no API credentials, web server, browser
 JavaScript, or external assets are needed. Run the renderer again after fetching
 a new snapshot to refresh the report. A failed render preserves the previous HTML.
 

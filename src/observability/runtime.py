@@ -50,6 +50,7 @@ def configure_logging(log_file: Path, *, level: int = logging.INFO):
     log_file.parent.mkdir(parents=True, exist_ok=True)
     package_logger = logging.getLogger("src")
     previous_level = package_logger.level
+    previous_propagate = package_logger.propagate
     file_handler = RotatingFileHandler(
         log_file, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
     )
@@ -58,6 +59,7 @@ def configure_logging(log_file: Path, *, level: int = logging.INFO):
         handler.setFormatter(JsonFormatter())
         package_logger.addHandler(handler)
     package_logger.setLevel(level)
+    package_logger.propagate = False
     try:
         yield
     finally:
@@ -65,6 +67,7 @@ def configure_logging(log_file: Path, *, level: int = logging.INFO):
             package_logger.removeHandler(handler)
             handler.close()
         package_logger.setLevel(previous_level)
+        package_logger.propagate = previous_propagate
 
 
 @contextmanager
@@ -75,20 +78,21 @@ def trace(operation: str):
                 parent.span_id if parent else None)
     token = _span.set(span)
     started = perf_counter()
-    logger.info("Started %s", operation, extra={"event": "span.started", "operation": operation})
     try:
-        yield span
-    except BaseException as exc:
-        logger.error("Failed %s", operation, extra={
-            "event": "span.failed", "operation": operation,
-            "duration_ms": round((perf_counter() - started) * 1000, 3),
-            "error_type": type(exc).__name__,
-        })
-        raise
-    else:
-        logger.info("Completed %s", operation, extra={
-            "event": "span.completed", "operation": operation,
-            "duration_ms": round((perf_counter() - started) * 1000, 3),
-        })
+        logger.info("Started %s", operation, extra={"event": "span.started", "operation": operation})
+        try:
+            yield span
+        except BaseException as exc:
+            logger.error("Failed %s", operation, extra={
+                "event": "span.failed", "operation": operation,
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "error_type": type(exc).__name__,
+            })
+            raise
+        else:
+            logger.info("Completed %s", operation, extra={
+                "event": "span.completed", "operation": operation,
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+            })
     finally:
         _span.reset(token)

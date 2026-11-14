@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, TYPE_CHECKING
 
-from requests import RequestException
+from requests import HTTPError, RequestException
 
 from src.observability import trace
 
@@ -107,6 +107,10 @@ class CoinbaseClient:
         except (TypeError, ValueError) as exc:
             raise CoinbaseClientError("Coinbase API credentials have an invalid format") from exc
 
+    def close(self) -> None:
+        """Release the SDK HTTP session; also usable with contextlib.closing."""
+        self.client.session.close()
+
     @staticmethod
     @trace("coinbase.api_request")
     def _call(operation: str, function: Callable[..., Any], **kwargs: Any) -> dict[str, Any]:
@@ -134,13 +138,14 @@ class CoinbaseClient:
             response = self._call(operation, function, cursor=cursor, **kwargs)
             page = _records(response, field, operation)
             has_next = _required(response, "has_next", operation, bool)
+            if has_next:
+                cursor = _required(response, "cursor", operation, str)
+                if cursor in seen:
+                    raise CoinbaseClientError(f"Coinbase {operation} returned a repeated cursor")
+                seen.add(cursor)
             yield from page
             if not has_next:
                 return
-            cursor = _required(response, "cursor", operation, str)
-            if cursor in seen:
-                raise CoinbaseClientError(f"Coinbase {operation} returned a repeated cursor")
-            seen.add(cursor)
 
     def _product_price(self, product_id: str) -> Decimal:
         response = self._call(
@@ -204,6 +209,7 @@ class CoinbaseClient:
         """Return crypto wallets, including holds, with seven-day USDC estimates."""
         rows = self._pages("accounts", self.client.get_accounts, "accounts", limit=250)
         rates: dict[str, tuple[Decimal, Decimal]] = {}
+        prices: dict[str, Decimal | None] = {"USDC": Decimal(1)}
         seen: set[str] = set()
         for row in rows:
             portfolio_id = _required(row, "retail_portfolio_id", "account", str)
@@ -233,6 +239,18 @@ class CoinbaseClient:
                 self._usdc_rates(currency, as_of - timedelta(days=7), rates)
                 if quantity else (Decimal(0), Decimal(0))
             )
+            if quantity:
+                prices[currency] = current_rate
+            elif currency not in prices:
+                try:
+                    prices[currency] = self._product_price(f"{currency}-USDC")
+                except CoinbaseClientError as exc:
+                    cause = exc.__cause__
+                    if not isinstance(cause, HTTPError) or cause.response is None or cause.response.status_code != 404:
+                        raise
+                    # Retired assets may remain as empty wallets with no market.
+                    prices[currency] = None
+                    logger.warning("No current USDC price for empty %s wallet", currency)
             value, previous = quantity * current_rate, quantity * previous_rate
             difference, percent = _change(value, previous)
             yield CoinbaseCrypto(
@@ -248,6 +266,7 @@ class CoinbaseClient:
                 weekly_change_percent=percent,
                 active=_required(row, "active", "account", bool),
                 ready=_required(row, "ready", "account", bool),
+                current_price_usdc=prices[currency],
             )
 
     @trace("coinbase.portfolios")
@@ -302,11 +321,12 @@ class CoinbaseClient:
         """Return active orders and orders fully filled within the last seven days."""
         now = _now(as_of)
         active_statuses = {"PENDING", "OPEN", "QUEUED", "CANCEL_QUEUED", "EDIT_QUEUED"}
+        statuses = active_statuses | {"FILLED"}
         # Separate status/source queries preserve Coinbase's filtering behavior.
         rows = (
             row
             for source in ("RETAIL_ADVANCED", "RETAIL_SIMPLE")
-            for status in sorted(active_statuses | {"FILLED"})
+            for status in sorted(statuses)
             for row in self._pages(
                 f"{source} {status} orders", self.client.list_orders, "orders",
                 order_status=[status], limit=100,
@@ -328,7 +348,7 @@ class CoinbaseClient:
             seen.add(order_id)
             side = _required(row, "side", "order", str)
             status = _required(row, "status", "order", str)
-            if side not in {"BUY", "SELL"} or status not in active_statuses | {"FILLED"}:
+            if side not in {"BUY", "SELL"} or status not in statuses:
                 raise CoinbaseClientError(f"Unexpected Coinbase order side/status: {side}/{status}")
             last_fill = row.get("last_fill_time")
             if status == "FILLED" and not last_fill:
@@ -369,5 +389,5 @@ class CoinbaseClient:
             for days in (1, 7, 30):
                 previous = self._historical_price(product_id, now - timedelta(days=days))
                 percentages.append((current - previous) / previous * 100)
-            movements[product_id] = MarketMovement(product_id, *percentages)
+            movements[product_id] = MarketMovement(product_id, *percentages, current_price=current)
         return [movements[product_id] for product_id in product_ids]

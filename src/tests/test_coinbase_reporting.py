@@ -28,6 +28,7 @@ def report_data():
                 "available_balance": "9007199254740993.123456789", "hold": "2",
                 "value_usdc": "110", "weekly_change_usdc": "0.00003",
                 "weekly_change_percent": None, "active": True, "ready": False,
+                "current_price_usdc": "1.00000001",
             }],
         }],
         "orders": {
@@ -40,7 +41,7 @@ def report_data():
             }],
             "filled_last_week": [],
         },
-        "watchlist": [{"product_id": "BTC-EUR", "daily_percent": "1", "weekly_percent": "-2", "monthly_percent": "0"}],
+        "watchlist": [{"product_id": "BTC-EUR", "current_price": "89012.12345678", "daily_percent": "1", "weekly_percent": "-2", "monthly_percent": "0"}],
     }
 
 
@@ -78,9 +79,19 @@ class CoinbaseReportingTests(unittest.TestCase):
         self.assertIn("test-trace", report)
         self.assertIn("Avg. price (quote)", report)
         self.assertIn("BTC-EUR", report)
+        self.assertIn("Current price (USDC)", report)
+        self.assertIn("Current price (quote)", report)
+        self.assertIn("89,012.12345678", report)
+        self.assertIn("1.00000001", report)
         self.assertIn("limit price: 100", report)
         self.assertNotIn("-0.00 USDC", report)
         self.assertEqual(self.snapshot["data"], report_data())
+
+    def test_old_snapshots_without_prices_still_render(self):
+        snapshot = deepcopy(self.snapshot)
+        del snapshot["data"]["portfolios"][0]["wallets"][0]["current_price_usdc"]
+        del snapshot["data"]["watchlist"][0]["current_price"]
+        self.assertIn("&mdash;", render_coinbase_report(snapshot))
 
     def test_artifact_text_is_escaped_and_report_has_no_active_content(self):
         report = render_coinbase_report(self.snapshot)
@@ -98,6 +109,35 @@ class CoinbaseReportingTests(unittest.TestCase):
         self.assertNotIn("<style", body)
         self.assertIn('style="', body)
         self.assertIn("Your portfolios", body)
+
+    def test_order_sort_uses_instants_instead_of_timestamp_text(self):
+        snapshot = deepcopy(self.snapshot)
+        first, second = deepcopy(snapshot["data"]["orders"]["in_progress"][0]), deepcopy(snapshot["data"]["orders"]["in_progress"][0])
+        first.update(order_id="earlier-order", created_time="2026-11-13T01:00:00+05:30")
+        second.update(order_id="later-order", created_time="2026-11-12T23:00:00Z")
+        snapshot["data"]["orders"]["in_progress"] = [first, second]
+        report = render_coinbase_report(snapshot)
+        self.assertLess(report.index("later-order"), report.index("earlier-order"))
+
+    def test_invalid_nested_data_has_clear_validation_errors(self):
+        for data in (None, [], "bad", {"orders": None}, {"orders": []}):
+            with self.subTest(data=data), self.assertRaisesRegex(ValueError, "objects"):
+                render_coinbase_body({**self.snapshot, "data": data})
+        for flag in ("false", 0, None):
+            snapshot = deepcopy(self.snapshot)
+            snapshot["data"]["portfolios"][0]["wallets"][0]["active"] = flag
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, "booleans"):
+                render_coinbase_body(snapshot)
+        for configuration in ([], False, ""):
+            snapshot = deepcopy(self.snapshot)
+            snapshot["data"]["orders"]["in_progress"][0]["order_configuration"] = configuration
+            with self.subTest(configuration=configuration), self.assertRaisesRegex(ValueError, "configuration"):
+                render_coinbase_body(snapshot)
+
+    def test_tiny_positive_movement_keeps_explicit_plus_sign(self):
+        snapshot = deepcopy(self.snapshot)
+        snapshot["data"]["portfolios"][0]["wallets"][0]["weekly_change_usdc"] = "0.0000000001"
+        self.assertIn("+1.0000E-10", render_coinbase_body(snapshot))
 
     def test_empty_snapshot_and_undefined_change_have_clear_states(self):
         snapshot = deepcopy(self.snapshot)

@@ -69,6 +69,37 @@ class ObservabilityTests(unittest.TestCase):
         self.assertTrue(any(record["component"] == "src.coinbase.coinbase_api" for record in records))
         self.assertNotIn("secret payload", self.path.read_text())
 
+    def test_file_logging_does_not_duplicate_events_through_root_handlers(self):
+        root = logging.getLogger()
+        output = StringIO()
+        handler = logging.StreamHandler(output)
+        root.addHandler(handler)
+        self.addCleanup(root.removeHandler, handler)
+        package = logging.getLogger("src")
+        previous_propagate = package.propagate
+        with configure_logging(self.path):
+            package.info("One destination per handler")
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(package.propagate, previous_propagate)
+
+    def test_failed_start_logging_does_not_leak_trace_context(self):
+        class FailingHandler(logging.Handler):
+            def emit(self, record):
+                raise RuntimeError("logging unavailable")
+
+        failing = FailingHandler()
+        trace_logger = logging.getLogger("src.observability.runtime")
+        with configure_logging(self.path):
+            trace_logger.addHandler(failing)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "logging unavailable"), trace("broken"):
+                    self.fail("Span should fail before executing the block")
+            finally:
+                trace_logger.removeHandler(failing)
+            with trace("next") as span:
+                self.assertIsNone(span.parent_span_id)
+
 
 if __name__ == "__main__":
     unittest.main()

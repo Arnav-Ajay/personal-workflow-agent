@@ -103,6 +103,16 @@ class CoinbaseTests(unittest.TestCase):
         factory.assert_called_once_with(api_key="key", api_secret="secret", timeout=30)
         self.assertIs(client.client, factory.return_value)
 
+    def test_close_releases_the_sdk_http_session(self):
+        self.client.close()
+        self.sdk.session.close.assert_called_once_with()
+
+    def test_invalid_cursor_is_rejected_before_valuing_wallets(self):
+        self.sdk.get_accounts.return_value = response(accounts=[wallet()], has_next=True)
+        with self.assertRaisesRegex(CoinbaseClientError, "cursor"):
+            self.client.get_user_portfolios(as_of=NOW)
+        self.sdk.get_public_product.assert_not_called()
+
     def test_invalid_credentials_raise_client_error(self):
         for key, secret in ((" ", "secret"), ("key", "\t"), (None, "secret")):
             with self.subTest(key=key, secret=secret), self.assertRaises(CoinbaseClientError):
@@ -129,6 +139,8 @@ class CoinbaseTests(unittest.TestCase):
         self.assertTrue(btc.ready)
         self.assertEqual(btc.total_balance, D("1.5"))
         self.assertEqual(btc.value_usdc, D("150"))
+        self.assertEqual((btc.current_price_usdc, usdc.current_price_usdc, eth.current_price_usdc),
+                         (D("100"), D("1"), D("200")))
         self.assertEqual(btc.previous_week_value_usdc, D("120"))
         self.assertEqual(btc.weekly_change_usdc, D("30"))
         self.assertEqual(btc.weekly_change_percent, D("25"))
@@ -184,12 +196,29 @@ class CoinbaseTests(unittest.TestCase):
                     self.client.get_user_portfolios(as_of=NOW)
         self.sdk.get_accounts.assert_not_called()
 
-    def test_zero_wallet_requires_no_market_and_zero_percent_is_undefined(self):
+    def test_empty_wallet_without_a_market_has_no_price_or_percent(self):
         self.sdk.get_accounts.return_value = response(accounts=[wallet("UNKNOWN", available="0", hold="0")], has_next=False)
-        item = self.client.get_user_portfolios(as_of=NOW)[0].wallets[0]
+        self.sdk.get_public_product.side_effect = not_found()
+        with self.assertLogs("src.coinbase.coinbase_api", level="WARNING"):
+            item = self.client.get_user_portfolios(as_of=NOW)[0].wallets[0]
         self.assertEqual(item.value_usdc, D(0))
         self.assertIsNone(item.weekly_change_percent)
-        self.sdk.get_public_product.assert_not_called()
+        self.assertIsNone(item.current_price_usdc)
+        self.sdk.get_public_candles.assert_not_called()
+
+    def test_empty_wallet_has_current_price_without_historical_requests(self):
+        self.sdk.get_accounts.return_value = response(accounts=[wallet(available="0", hold="0")], has_next=False)
+        self.sdk.get_public_product.return_value = response(price="100")
+        item = self.client.get_user_portfolios(as_of=NOW)[0].wallets[0]
+        self.assertEqual(item.current_price_usdc, D("100"))
+        self.assertEqual(item.value_usdc, D(0))
+        self.sdk.get_public_candles.assert_not_called()
+
+    def test_empty_wallet_network_failure_is_not_hidden_as_missing_price(self):
+        self.sdk.get_accounts.return_value = response(accounts=[wallet(available="0", hold="0")], has_next=False)
+        self.sdk.get_public_product.side_effect = Timeout("network timeout")
+        with self.assertRaisesRegex(CoinbaseClientError, "network timeout"):
+            self.client.get_user_portfolios(as_of=NOW)
 
     def test_price_cache_is_shared_by_wallets(self):
         self.configure_market()
@@ -501,6 +530,7 @@ class CoinbaseTests(unittest.TestCase):
 
         self.sdk.get_public_candles.side_effect = candles
         movement = self.client.get_watchlist_movement(["BTC-USDC"], as_of=NOW)[0]
+        self.assertEqual(movement.current_price, D("120"))
         self.assertEqual((movement.product_id, movement.daily_percent, movement.weekly_percent, movement.monthly_percent),
                          ("BTC-USDC", D("20"), D("-20"), D("50")))
 
@@ -510,6 +540,7 @@ class CoinbaseTests(unittest.TestCase):
             candles=[{"start": kwargs["start"], "open": "100"}]
         )
         movement = self.client.get_watchlist_movement(["BTC-USD"], as_of=NOW)[0]
+        self.assertEqual(movement.current_price, D("120"))
         self.assertEqual((movement.product_id, movement.weekly_percent), ("BTC-USD", D("20")))
         self.sdk.get_public_product.assert_called_once_with(product_id="BTC-USD")
 

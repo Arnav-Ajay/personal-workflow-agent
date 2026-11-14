@@ -4,12 +4,14 @@ import argparse
 import logging
 import os
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_WATCHLIST = ("BTC-USDC", "ETH-USDC", "NMR-USDC", "USDC-CAD")
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -29,10 +31,11 @@ def _fetch_and_save(args: argparse.Namespace, trace_id: str) -> Path:
             raise ValueError(f"missing {', '.join(missing)}. Set them in the environment or {PROJECT_ROOT / '.env'}.")
         client = CoinbaseClient(credentials["COINBASE_API_KEY"], credentials["COINBASE_API_SECRET"])
 
-    as_of = datetime.now(timezone.utc)
-    portfolios = client.get_user_portfolios(as_of=as_of)
-    orders = client.get_orders(as_of=as_of)
-    watchlist = client.get_watchlist_movement(args.watchlist, as_of=as_of) if args.watchlist else []
+    with closing(client):
+        as_of = datetime.now(timezone.utc)
+        portfolios = client.get_user_portfolios(as_of=as_of)
+        orders = client.get_orders(as_of=as_of)
+        watchlist = client.get_watchlist_movement(args.watchlist, as_of=as_of) if args.watchlist else []
     return save_snapshot(
         args.artifacts_dir, source="coinbase", as_of=as_of, trace_id=trace_id,
         data={"portfolios": portfolios, "orders": orders, "watchlist": watchlist},
@@ -50,7 +53,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=PROJECT_ROOT / "src/artifacts/coinbase")
     parser.add_argument("--log-dir", type=Path, help="Defaults to the artifacts directory")
-    parser.add_argument("--watchlist", nargs="+", default=[], metavar="PRODUCT_ID")
+    parser.add_argument(
+        "--watchlist", nargs="*", default=list(DEFAULT_WATCHLIST), metavar="PRODUCT_ID",
+        help="Override the default BTC, ETH, NMR and CAD markets; pass no products to disable",
+    )
     args = parser.parse_args(argv)
     try:
         with configure_logging((args.log_dir or args.artifacts_dir) / "log.json"):

@@ -22,6 +22,7 @@ class CoinbaseCrypto:
     weekly_change_percent: Decimal | None
     active: bool
     ready: bool
+    current_price_usdc: Decimal | None = None
 
     @property
     def total_balance(self) -> Decimal:
@@ -74,3 +75,4 @@ class MarketMovement:
     daily_percent: Decimal
     weekly_percent: Decimal
     monthly_percent: Decimal
+    current_price: Decimal | None = None

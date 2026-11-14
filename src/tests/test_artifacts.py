@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -70,6 +71,35 @@ class ArtifactTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 artifacts.save_snapshot(self.directory, source="test", data={}, as_of=value)
         self.assertFalse((self.directory / "manifest.json").exists())
+
+    def test_invalid_writer_inputs_do_not_replace_previous_manifest(self):
+        path = self.save()
+        before = path.read_bytes()
+        for overrides in ({"source": None}, {"data": []}, {"metadata": []}, {"trace_id": []}, {"trace_id": " "}):
+            args = {"source": "test", "data": {}, "as_of": self.as_of, **overrides}
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                artifacts.save_snapshot(self.directory, **args)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_reader_rejects_invalid_manifest_metadata(self):
+        path = self.save()
+        original = json.loads(path.read_text())
+        for changes in (
+            {"schema_version": True}, {"schema_version": 1.0}, {"source": []},
+            {"snapshot_id": None}, {"trace_id": {}}, {"as_of": None},
+            {"created_at": "2026-01-01T00:00:00"}, {"metadata": []},
+        ):
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps({**original, **changes}))
+                with self.assertRaises(ValueError):
+                    artifacts.load_latest_snapshot(self.directory)
+        for changes in ({"size_bytes": True}, {"size_bytes": 1.0}, {"sha256": "x"}):
+            with self.subTest(changes=changes):
+                manifest = deepcopy(original)
+                manifest["artifacts"][0].update(changes)
+                path.write_text(json.dumps(manifest))
+                with self.assertRaises(ValueError):
+                    artifacts.load_latest_snapshot(self.directory)
 
 
 if __name__ == "__main__":

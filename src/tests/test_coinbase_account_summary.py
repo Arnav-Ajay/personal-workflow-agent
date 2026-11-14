@@ -45,6 +45,7 @@ class CoinbaseAccountSummaryTests(unittest.TestCase):
             weekly_change_percent=None,
         )]
         self.client.get_orders.return_value = CoinbaseOrders(in_progress=[], filled_last_week=[])
+        self.client.get_watchlist_movement.return_value = []
 
     def test_main_saves_snapshot_manifest_and_correlated_logs(self):
         self.assertEqual(coinbase_account_summary.main(self.argv), 0)
@@ -62,7 +63,13 @@ class CoinbaseAccountSummaryTests(unittest.TestCase):
         self.assertEqual(manifest["metadata"]["wallet_count"], 1)
         self.client.get_user_portfolios.assert_called_once()
         self.assertEqual(self.client.get_user_portfolios.call_args, self.client.get_orders.call_args)
-        self.client.get_watchlist_movement.assert_not_called()
+        self.client.get_watchlist_movement.assert_called_once_with(
+            ["BTC-USDC", "ETH-USDC", "NMR-USDC", "USDC-CAD"],
+            as_of=self.client.get_orders.call_args.kwargs["as_of"],
+        )
+        self.assertEqual(manifest["metadata"]["watchlist_products"],
+                         ["BTC-USDC", "ETH-USDC", "NMR-USDC", "USDC-CAD"])
+        self.client.close.assert_called_once_with()
         self.load.assert_called_once_with(coinbase_account_summary.PROJECT_ROOT / ".env")
         records = [json.loads(line) for line in (self.logs / "log.json").read_text().splitlines()]
         self.assertEqual({record["trace_id"] for record in records}, {manifest["trace_id"]})
@@ -79,6 +86,12 @@ class CoinbaseAccountSummaryTests(unittest.TestCase):
         manifest = json.loads((self.artifacts / "manifest.json").read_text())
         self.assertEqual(manifest["metadata"]["watchlist_products"], ["BTC-USDC"])
 
+    def test_watchlist_can_be_disabled_explicitly(self):
+        self.assertEqual(coinbase_account_summary.main(self.argv + ["--watchlist"]), 0)
+        self.client.get_watchlist_movement.assert_not_called()
+        manifest = json.loads((self.artifacts / "manifest.json").read_text())
+        self.assertEqual(manifest["metadata"]["watchlist_products"], [])
+
     def test_fetch_failure_preserves_previous_manifest(self):
         self.assertEqual(coinbase_account_summary.main(self.argv), 0)
         original = (self.artifacts / "manifest.json").read_bytes()
@@ -86,6 +99,7 @@ class CoinbaseAccountSummaryTests(unittest.TestCase):
         self.assertEqual(coinbase_account_summary.main(self.argv), 1)
         self.assertEqual((self.artifacts / "manifest.json").read_bytes(), original)
         self.assertEqual(len(list((self.artifacts / "snapshots").glob("*.json"))), 1)
+        self.assertEqual(self.client.close.call_count, 2)
         records = [json.loads(line) for line in (self.logs / "log.json").read_text().splitlines()]
         self.assertTrue(any(record.get("event") == "span.failed" for record in records))
 

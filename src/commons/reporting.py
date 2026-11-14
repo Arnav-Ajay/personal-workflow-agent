@@ -11,7 +11,7 @@ from string import Template
 
 from src.observability import trace
 
-from .artifacts import _atomic_write
+from .artifacts import atomic_write
 
 
 @trace("reports.save_html")
@@ -19,7 +19,7 @@ def save_html_report(path: Path, report: str) -> None:
     """Publish a fully rendered HTML file without exposing a partial report."""
     if path.suffix.lower() != ".html":
         raise ValueError("Report output must have an .html extension")
-    _atomic_write(path, report.encode("utf-8"))
+    atomic_write(path, report.encode("utf-8"))
 
 
 def text(value: object) -> str:

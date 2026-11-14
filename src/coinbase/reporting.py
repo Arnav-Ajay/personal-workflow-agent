@@ -28,7 +28,7 @@ def _amount(value: Any, *, places: int = 2, signed: bool = False) -> str:
     if places > 2:
         formatted = formatted.rstrip("0").rstrip(".")
         if number and abs(number) < Decimal(10) ** -places:
-            formatted = f"{number:.4E}"
+            formatted = format(number, "+.4E" if signed else ".4E")
     return f'<span title="{text(value)}">{text(formatted)}</span>'
 
 
@@ -42,15 +42,17 @@ def _movement(value: Any, *, percent: bool = False) -> str:
     return f'<span style="color:{color};font-weight:600;">{_amount(value, places=places, signed=True)}{suffix}</span>'
 
 
-def _date(value: str | None) -> str:
-    if value is None:
-        return "Not available"
+def _timestamp(value: str) -> datetime:
     if not isinstance(value, str):
         raise ValueError("Snapshot dates must be strings")
     date = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if date.tzinfo is None or date.utcoffset() is None:
         raise ValueError("Snapshot dates must include a timezone")
-    return date.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+    return date.astimezone(timezone.utc)
+
+
+def _date(value: str | None) -> str:
+    return "Not available" if value is None else _timestamp(value).strftime("%d %b %Y, %H:%M UTC")
 
 
 def _small(value: object) -> str:
@@ -70,10 +72,12 @@ def _share(value: Decimal, total: Decimal) -> str:
 
 def _order_rows(orders: list[dict[str, Any]]) -> list[list[str]]:
     rows = []
-    for order in sorted(orders, key=lambda row: row.get("last_fill_time") or row["created_time"], reverse=True):
+    for order in sorted(orders, key=lambda row: _timestamp(row.get("last_fill_time") or row["created_time"]), reverse=True):
         side = str(order["side"])
         color = "#12745e" if side == "BUY" else "#b44040"
-        configuration = order.get("order_configuration") or {}
+        configuration = order.get("order_configuration")
+        if configuration is None:
+            configuration = {}
         if not isinstance(configuration, dict):
             raise ValueError("Order configuration must be an object")
         terms = []
@@ -98,9 +102,12 @@ def _order_rows(orders: list[dict[str, Any]]) -> list[list[str]]:
 @trace("coinbase.render_report_body")
 def render_coinbase_body(snapshot: dict[str, Any]) -> str:
     """Return the core report sections, independently reusable in email layouts."""
-    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 1 or snapshot.get("source") != "coinbase":
+    if (not isinstance(snapshot, dict) or type(snapshot.get("schema_version")) is not int or
+            snapshot["schema_version"] != 1 or snapshot.get("source") != "coinbase"):
         raise ValueError("Expected a version 1 Coinbase snapshot")
-    data = snapshot["data"]
+    data = snapshot.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("orders"), dict):
+        raise ValueError("Snapshot data and orders must be objects")
     portfolios = data["portfolios"]
     active, filled = data["orders"]["in_progress"], data["orders"]["filled_last_week"]
     watchlist = data.get("watchlist", [])
@@ -111,6 +118,9 @@ def render_coinbase_body(snapshot: dict[str, Any]) -> str:
     for portfolio in portfolios:
         if not isinstance(portfolio["wallets"], list) or any(not isinstance(row, dict) for row in portfolio["wallets"]):
             raise ValueError("Portfolio wallets must be a list of objects")
+        for wallet in portfolio["wallets"]:
+            if any(not isinstance(wallet.get(flag), bool) for flag in ("active", "ready")):
+                raise ValueError("Wallet active and ready flags must be booleans")
     total = sum((_decimal(p["total_value_usdc"]) for p in portfolios), Decimal(0))
     previous = sum((_decimal(p["previous_week_value_usdc"]) for p in portfolios), Decimal(0))
     difference = total - previous
@@ -160,13 +170,14 @@ def render_coinbase_body(snapshot: dict[str, Any]) -> str:
             state = "Ready" if wallet["active"] and wallet["ready"] else "Not ready" if wallet["active"] else "Inactive"
             rows.append([
                 f'<strong>{text(wallet["currency"])}</strong><br>{_small(wallet["name"])}<br>{_small(state)}',
+                _amount(wallet.get("current_price_usdc"), places=8),
                 _amount(quantity, places=8),
                 _amount(wallet["available_balance"], places=8),
                 _amount(wallet["hold"], places=8),
                 _amount(wallet["value_usdc"]) + " USDC",
                 _movement(wallet["weekly_change_usdc"]) + "<br>" + _movement(wallet.get("weekly_change_percent"), percent=True),
             ])
-        holdings += table(["Asset", "Total quantity", "Available", "Held", "Value", "7-day movement"], rows,
+        holdings += table(["Asset", "Current price (USDC)", "Total quantity", "Available", "Held", "Value", "7-day movement"], rows,
                           "This portfolio has no crypto wallets.")
     body += section("02 / HOLDINGS", "Asset breakdown", "Wallet quantities stay in their original asset; market values are estimated in USDC.",
                     holdings or '<p style="padding:12px;color:#687787;">No wallets in this snapshot.</p>')
@@ -177,12 +188,13 @@ def render_coinbase_body(snapshot: dict[str, Any]) -> str:
                     table(headers, _order_rows(filled), "No fully filled orders in the seven-day window."))
     watch_rows = [[
         f'<strong>{text(item["product_id"])}</strong>',
+        _amount(item.get("current_price"), places=8) + "<br>" + _small(str(item["product_id"]).rsplit("-", 1)[-1]),
         _movement(item["daily_percent"], percent=True),
         _movement(item["weekly_percent"], percent=True),
         _movement(item["monthly_percent"], percent=True),
     ] for item in watchlist]
-    body += section("05 / MARKETS", "Your watchlist", "Price movement for the products included when this snapshot was fetched.",
-                    table(["Product", "24 hours", "7 days", "30 days"], watch_rows,
+    body += section("05 / MARKETS", "Your watchlist", "Snapshot prices use each product's quote currency, for example CAD per USDC for USDC-CAD.",
+                    table(["Product", "Current price (quote)", "24 hours", "7 days", "30 days"], watch_rows,
                           "No watchlist products included in this snapshot."))
     return body
 
