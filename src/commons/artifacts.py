@@ -1,6 +1,8 @@
 """JSON snapshots published through an atomically replaced latest manifest."""
 
 import hashlib
+import csv
+import io
 import json
 import logging
 import os
@@ -108,6 +110,36 @@ def atomic_write(path: Path, content: bytes) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+@trace("artifacts.save_csv_bundle")
+def save_csv_bundle(directory: Path, tables: dict[str, list[dict[str, Any]]], *,
+                    source: str, snapshot_id: str, trace_id: str | None = None) -> Path:
+    """Publish derived CSV tables with their own source-linked checksum manifest.
+
+    Callers should use a fresh directory for each source snapshot. A manifest is
+    written last; a directory without one is an incomplete export.
+    """
+    encoded = {}
+    for name, rows in tables.items():
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+            raise ValueError("CSV table names must be simple filenames without extensions")
+        columns = list(dict.fromkeys(key for row in rows for key in row))
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=columns)
+        if columns:
+            writer.writeheader()
+            writer.writerows(rows)
+        encoded[f"{name}.csv"] = buffer.getvalue().encode("utf-8")
+    entries = [{"path": name, "media_type": "text/csv", "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest()} for name, content in encoded.items()]
+    manifest = _encode({"schema_version": 1, "source": source, "source_snapshot_id": snapshot_id,
+                        "trace_id": trace_id, "created_at": datetime.now(timezone.utc), "artifacts": entries})
+    for name, content in encoded.items():
+        atomic_write(directory / name, content)
+    path = directory / "manifest.json"
+    atomic_write(path, manifest)
+    return path
 
 
 @trace("artifacts.save_snapshot")

@@ -8,6 +8,25 @@ Starting with 2 projects that I'm currently working on:
 1. Numerai Competition
 2. Portfolio / Expense report
 
+## Numerai reporting
+
+Reusable Numerai Classic reporting code lives in `src/numerai`; runnable entry
+points live in `scripts/`. It covers
+account performance, `kaijo_model_01`, its last seven resolved rounds, and its
+next seven resolving rounds, including daily and intra-round trend data.
+
+```powershell
+python -m scripts.numerai_account_summary
+python -m scripts.numerai_export_trends
+```
+
+Credentials are read from the existing `.env`. Outputs, manifests and logs go
+to `src/artifacts/numerai`; shared artifact and observability code is reused.
+The exporter produces nine graph-ready CSV datasets, preserving score names,
+versions, dates, values, percentiles and resolved/provisional state.
+See [Numerai usage and metric definitions](src/numerai/README.md) for the data
+layout, round-selection rules, plotting columns and credential names.
+
 ## Coinbase reporting
 
 `src.coinbase` provides read-only Coinbase Advanced Trade reporting. Install
