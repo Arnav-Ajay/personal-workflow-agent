@@ -1,6 +1,7 @@
 """Snapshot publication and serialization guarantees."""
 
 import hashlib
+import csv
 import json
 import tempfile
 import unittest
@@ -87,12 +88,15 @@ class ArtifactTests(unittest.TestCase):
         for changes in (
             {"schema_version": True}, {"schema_version": 1.0}, {"source": []},
             {"snapshot_id": None}, {"trace_id": {}}, {"as_of": None},
+            {"snapshot_id": "../outside"}, {"snapshot_id": "..\\outside"},
+            {"snapshot_id": "/absolute"}, {"snapshot_id": "C:\\absolute"},
             {"created_at": "2026-01-01T00:00:00"}, {"metadata": []},
         ):
             with self.subTest(changes=changes):
                 path.write_text(json.dumps({**original, **changes}))
                 with self.assertRaises(ValueError):
                     artifacts.load_latest_snapshot(self.directory)
+
         for changes in ({"size_bytes": True}, {"size_bytes": 1.0}, {"sha256": "x"}):
             with self.subTest(changes=changes):
                 manifest = deepcopy(original)
@@ -100,6 +104,24 @@ class ArtifactTests(unittest.TestCase):
                 path.write_text(json.dumps(manifest))
                 with self.assertRaises(ValueError):
                     artifacts.load_latest_snapshot(self.directory)
+
+    def test_csv_rejects_formulas_and_headers_before_writing_any_files(self):
+        for text in ("=SUM(1,2)", "+CMD()", "-CMD()", "@SUM(1)", "  =1+1", "\t=1+1", "\rtext", "\ntext", "＝1+1"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "formula-like"):
+                artifacts.save_csv_bundle(self.directory, {"safe": [{"value": "1"}], "unsafe": [{"name": text}]},
+                                          source="test", snapshot_id="test-id")
+        with self.assertRaisesRegex(ValueError, "formula-like"):
+            artifacts.save_csv_bundle(self.directory, {"unsafe": [{"=HEADER()": "value"}]},
+                                      source="test", snapshot_id="test-id")
+        self.assertFalse(list(self.directory.glob("*.csv")))
+        self.assertFalse((self.directory / "manifest.json").exists())
+
+    def test_csv_preserves_negative_and_scientific_numbers(self):
+        row = {"negative": "-0.123456789", "positive": "+1.25", "scientific": "-1.234e-10", "label": "mmc / v5"}
+        artifacts.save_csv_bundle(self.directory, {"metrics": [row]}, source="test", snapshot_id="test-id")
+        with (self.directory / "metrics.csv").open(newline="", encoding="utf-8") as stream:
+            self.assertEqual(next(csv.DictReader(stream)), row)
+
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 pytest
 requests
 python-dotenv
+matplotlib
 
 # Coinbase SDK for interacting with the Coinbase Data Platform
 coinbase-advanced-py

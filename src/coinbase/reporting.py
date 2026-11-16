@@ -7,6 +7,12 @@ from typing import Any
 from src.commons.reporting import render_document, section, table, text
 from src.observability import trace
 
+REPORT_NOTE = (
+    "Coinbase: weekly movement reprices current quantities at prices from seven days earlier. "
+    "It estimates market movement, not profit/loss or historical account value. Crypto balances include "
+    "available and held funds; fiat and derivatives are excluded. USDC is valued at face value."
+)
+
 
 def _decimal(value: Any) -> Decimal:
     try:
@@ -205,4 +211,5 @@ def render_coinbase_report(snapshot: dict[str, Any]) -> str:
         title="Coinbase · Portfolio snapshot", body=render_coinbase_body(snapshot),
         as_of=_date(snapshot["as_of"]), snapshot_id=snapshot["snapshot_id"],
         trace_id=snapshot.get("trace_id") or "Not recorded",
+        notes=[REPORT_NOTE],
     )

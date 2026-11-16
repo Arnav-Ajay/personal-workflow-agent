@@ -8,6 +8,46 @@ Starting with 2 projects that I'm currently working on:
 1. Numerai Competition
 2. Portfolio / Expense report
 
+## Collective dashboard
+
+Generate one Coinbase + Numerai summary from their latest saved snapshots:
+
+```powershell
+python .\scripts\workflow_dashboard.py
+Start-Process .\src\artifacts\report.html
+```
+
+The report includes Coinbase holdings/activity and all four Numerai views:
+account performance, `kaijo_model_01`, the last seven resolved rounds, and the
+next seven resolving rounds. Static trend charts cover NMR returns, daily model
+reputation, resolved-round scores, and provisional resolving-round scores. Each
+source keeps its own capture timestamp and units; NMR and USDC are not added.
+
+The page is a self-contained local HTML file with embedded PNGs, responsive
+tables and no browser JavaScript or remote assets. Install `requirements.txt`
+to include Matplotlib for headless chart generation. It reads artifacts only;
+it does not fetch live data or need credentials. Run the fetch scripts first
+when you want newer data, then regenerate the combined report. If one source
+has no manifest, its section explains how to fetch it; corrupt or incomplete
+snapshots fail validation and preserve the previous report.
+
+Outputs default to `src/artifacts/report.html`, `src/artifacts/log.json`, and
+reusable PNG files in `src/artifacts/report_images/`. Content-addressed chart
+files are retained so earlier exports are not overwritten. Use `--artifacts-dir`
+to choose a root containing `coinbase/` and `numerai/`, `--output` for the HTML
+path, or `--log-dir` for logs. Runnable orchestration lives in `scripts/`;
+callable composition, chart and HTML helpers live under `src/commons`, and
+Numerai sections live in `src/numerai/reporting.py`.
+
+For future email composition, call
+`render_workflow_report(coinbase_snapshot, numerai_snapshot, email=True)` from
+`src.commons.workflow_report`. It returns `RenderedReport.html` with `cid:`
+image references and `RenderedReport.images`, a mapping of Content-ID to PNG
+bytes. Core tables and formatting use inline styles; email images can be
+attached by matching Content-ID. The default browser version embeds those PNGs
+instead. No email is sent by this script; transport and email-client rendering
+tests can be added when sending is implemented.
+
 ## Numerai reporting
 
 Reusable Numerai Classic reporting code lives in `src/numerai`; runnable entry

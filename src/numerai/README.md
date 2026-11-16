@@ -4,6 +4,12 @@
 transformations. Command-line parsing, environment loading and execution live
 in `scripts/numerai_account_summary.py` and `scripts/numerai_export_trends.py`.
 
+To view Numerai alongside Coinbase, run `python scripts/workflow_dashboard.py`
+and open `src/artifacts/report.html`. The shared page includes the four Numerai
+views and static PNG trend charts, with provisional round results clearly
+labeled. The sections are callable through `src/numerai/reporting.py`; the
+collective renderer also supports CID image references for future email use.
+
 Run from the repository root:
 
 ```powershell
@@ -122,6 +128,11 @@ Never sum repeated daily or per-score payout fields: use `round_payouts.csv`
 for round totals. Histories are API observations, not forecasts; the reference
 time does not turn live API data into a backtesting interface. Empty datasets
 export as empty CSVs, indicating there were no observations.
+
+Snapshot identifiers are validated before use as export-directory names. CSV
+exports reject formula-like text in cells and headers rather than modifying
+metric identities; ordinary signed/scientific numeric strings remain unchanged.
+The original source data remains in the JSON snapshot if a CSV export is rejected.
 
 The fetcher validates model ownership, account/tournament identity, pagination,
 and round identities when loading detailed histories. The performance endpoint

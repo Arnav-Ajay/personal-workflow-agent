@@ -29,6 +29,8 @@ def _validate_envelope(value: Any, description: str) -> None:
             continue
         if not isinstance(value.get(field), str) or not value[field].strip():
             raise ValueError(f"Invalid {description} {field}")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", value["snapshot_id"]):
+        raise ValueError(f"Invalid {description} snapshot_id: must be a simple identifier")
     for field in ("as_of", "created_at"):
         timestamp = value.get(field)
         try:
@@ -125,11 +127,13 @@ def save_csv_bundle(directory: Path, tables: dict[str, list[dict[str, Any]]], *,
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
             raise ValueError("CSV table names must be simple filenames without extensions")
         columns = list(dict.fromkeys(key for row in rows for key in row))
+        for column in columns:
+            _csv_value(column)
         buffer = io.StringIO(newline="")
         writer = csv.DictWriter(buffer, fieldnames=columns)
         if columns:
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows({key: _csv_value(value) for key, value in row.items()} for row in rows)
         encoded[f"{name}.csv"] = buffer.getvalue().encode("utf-8")
     entries = [{"path": name, "media_type": "text/csv", "size_bytes": len(content),
                 "sha256": hashlib.sha256(content).hexdigest()} for name, content in encoded.items()]
@@ -140,6 +144,20 @@ def save_csv_bundle(directory: Path, tables: dict[str, list[dict[str, Any]]], *,
     path = directory / "manifest.json"
     atomic_write(path, manifest)
     return path
+
+
+def _csv_value(value: Any) -> Any:
+    """Reject formula-like text; keep signed decimal strings unchanged for plotting.
+
+    Refusing unsafe cells avoids changing metric names or silently corrupting
+    machine-readable exports. JSON snapshots retain the original source data.
+    """
+    if isinstance(value, str):
+        stripped = value.lstrip(" \t\r\n")
+        if stripped.startswith(("=", "+", "-", "@", "＝", "＋", "－", "＠")) or value.startswith(("\t", "\r", "\n")):
+            if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+                raise ValueError("CSV export contains unsafe formula-like text")
+    return value
 
 
 @trace("artifacts.save_snapshot")

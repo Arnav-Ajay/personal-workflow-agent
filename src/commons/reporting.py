@@ -5,13 +5,47 @@ point it enters HTML. The shell template adds browser/print enhancements, while
 the report body remains usable without JavaScript or an external stylesheet.
 """
 
+from base64 import b64encode
+from dataclasses import dataclass, field
+from hashlib import sha256
 from html import escape
 from pathlib import Path
+import re
 from string import Template
 
 from src.observability import trace
 
 from .artifacts import atomic_write
+
+
+@dataclass(frozen=True)
+class RenderedReport:
+    """Rendered HTML and generated PNGs, with a CID form available for email."""
+
+    html: str
+    images: dict[str, bytes] = field(default_factory=dict)
+
+
+def embed_report_images(report: RenderedReport) -> str:
+    """Embed trusted generated PNGs for a standalone browser view of email HTML."""
+    html = report.html
+    for content_id, image in report.images.items():
+        html = html.replace(f'src="cid:{content_id}"',
+                            f'src="data:image/png;base64,{b64encode(image).decode("ascii")}"')
+    return html
+
+
+@trace("reports.save_images")
+def save_report_images(directory: Path, images: dict[str, bytes]) -> dict[str, Path]:
+    """Save reusable chart PNGs under content-addressed, safe filenames."""
+    if any(not re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in images):
+        raise ValueError("Chart content IDs must be simple names")
+    paths = {}
+    for name, content in images.items():
+        path = directory / f"{name}-{sha256(content).hexdigest()[:16]}.png"
+        atomic_write(path, content)
+        paths[name] = path
+    return paths
 
 
 @trace("reports.save_html")
@@ -56,9 +90,14 @@ def section(number: str, title: str, subtitle: str, body: str) -> str:
     )
 
 
-def render_document(*, title: str, body: str, as_of: str, snapshot_id: str, trace_id: str) -> str:
+def render_document(*, title: str, body: str, as_of: str, snapshot_id: str, trace_id: str,
+                    label: str = "COINBASE REPORT", heading: str = "Your portfolio, at a glance.",
+                    description: str = "A clear view of your holdings, orders, and market movement.",
+                    notes: list[str] | None = None) -> str:
     template = Template((Path(__file__).parent / "templates/summary.html").read_text(encoding="utf-8"))
     return template.substitute(
         title=text(title), body=body, as_of=text(as_of),
         snapshot_id=text(snapshot_id), trace_id=text(trace_id),
+        label=text(label), heading=text(heading), description=text(description),
+        notes="".join(f'<p style="margin:0 0 10px;">{text(note)}</p>' for note in notes or []),
     )
