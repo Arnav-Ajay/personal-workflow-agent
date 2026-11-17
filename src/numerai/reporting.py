@@ -5,13 +5,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.commons.charts import ChartSeries, line_chart
-from src.commons.reporting import section, table, text
+from src.commons.reporting import RenderedReport, embed_report_images, render_document, section, table, text
 from src.observability import trace
 
 REPORT_NOTE = (
     "Numerai: resolving-round scores and payouts are provisional observations, not forecasts. "
     "Round windows count submitted rounds, not days. A resolved round does not confirm on-chain payment. "
-    "NMR amounts remain separate from Coinbase USDC values; returns are not added across services. "
+    "Amounts are in NMR; return rates retain Numerai's native units. "
     "Charts retain metric names and versions and use saved data only."
 )
 
@@ -145,7 +145,7 @@ def render_numerai_body(snapshot: dict[str, Any], *, images: dict[str, bytes] | 
         ("Classic models", len(account["models"]), "models"),
     ])
     body = section("NUMERAI / 01", "Overall account performance",
-                   "Numerai-provided aggregate returns. Balances and model stakes are not added to Coinbase holdings.",
+                   "Numerai-provided aggregate returns, balances, and model stakes.",
                    account_info + _returns_table(summary.get("returns")) +
                    _image(images, "numerai-returns", "Account and model cumulative NMR returns over time"))
     account_scores = summary.get("scores") or {}
@@ -184,3 +184,21 @@ def render_numerai_body(snapshot: dict[str, Any], *, images: dict[str, bytes] | 
              'and intra-round observations remain available in the Numerai snapshot and CSV exports. '
              'Missing values are shown as a dash; chart gaps do not imply zero performance.</p>')
     return body
+
+
+@trace("numerai.render_report")
+def render_numerai_report(snapshot: dict[str, Any], *, email: bool = False) -> RenderedReport:
+    """Render Numerai alone; retain CID references only for email composition."""
+    if not isinstance(snapshot, dict) or snapshot.get("source") != "numerai":
+        raise ValueError("Expected a Numerai snapshot")
+    images = build_numerai_charts(snapshot["data"])
+    html = render_document(
+        title="Numerai · Account and model performance", body=render_numerai_body(snapshot, images=images),
+        as_of=_date(snapshot["as_of"]), snapshot_id=snapshot["snapshot_id"],
+        trace_id=snapshot.get("trace_id") or "Not recorded", label="NUMERAI REPORT",
+        heading="Your models, at a glance.", description="Account performance, model trends, and the rounds to watch.",
+        notes=[REPORT_NOTE],
+        email=email,
+    )
+    report = RenderedReport(html, images)
+    return report if email else RenderedReport(embed_report_images(report), images)

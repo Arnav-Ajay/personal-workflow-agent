@@ -118,7 +118,8 @@ class CoinbaseClient:
         try:
             response = function(**kwargs).to_dict()
         except RequestException as exc:
-            raise CoinbaseClientError(f"Coinbase {operation} failed: {exc}") from exc
+            # Network exception text can include URLs, credentials, or payloads.
+            raise CoinbaseClientError(f"Coinbase {operation} request failed ({type(exc).__name__})") from exc
         except Exception as exc:
             # SDK response parsing and JWT signing can raise plain Exception.
             raise CoinbaseClientError(f"Coinbase {operation} failed in the SDK") from exc

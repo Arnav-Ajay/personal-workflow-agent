@@ -93,8 +93,9 @@ def section(number: str, title: str, subtitle: str, body: str) -> str:
 def render_document(*, title: str, body: str, as_of: str, snapshot_id: str, trace_id: str,
                     label: str = "COINBASE REPORT", heading: str = "Your portfolio, at a glance.",
                     description: str = "A clear view of your holdings, orders, and market movement.",
-                    notes: list[str] | None = None) -> str:
-    template = Template((Path(__file__).parent / "templates/summary.html").read_text(encoding="utf-8"))
+                    notes: list[str] | None = None, email: bool = False) -> str:
+    filename = "email_summary.html" if email else "summary.html"
+    template = Template((Path(__file__).parent / "templates" / filename).read_text(encoding="utf-8"))
     return template.substitute(
         title=text(title), body=body, as_of=text(as_of),
         snapshot_id=text(snapshot_id), trace_id=text(trace_id),

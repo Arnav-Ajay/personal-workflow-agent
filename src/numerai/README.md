@@ -4,11 +4,13 @@
 transformations. Command-line parsing, environment loading and execution live
 in `scripts/numerai_account_summary.py` and `scripts/numerai_export_trends.py`.
 
-To view Numerai alongside Coinbase, run `python scripts/workflow_dashboard.py`
-and open `src/artifacts/report.html`. The shared page includes the four Numerai
-views and static PNG trend charts, with provisional round results clearly
-labeled. The sections are callable through `src/numerai/reporting.py`; the
-collective renderer also supports CID image references for future email use.
+To build the independent Numerai page, run `python scripts/numerai_dashboard.py`
+and open `src/artifacts/numerai/report.html`. It includes all four Numerai views
+and static PNG trend charts, with provisional rounds clearly labeled.
+`python scripts/workflow_dashboard.py` regenerates the separate Coinbase and
+Numerai reports and a short index at `src/artifacts/report.html`. Numerai is not
+included in Coinbase emails, and has no email-dispatch entry point.
+The callable renderer is `src/numerai/reporting.py`.
 
 Run from the repository root:
 

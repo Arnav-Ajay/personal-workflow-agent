@@ -8,45 +8,83 @@ Starting with 2 projects that I'm currently working on:
 1. Numerai Competition
 2. Portfolio / Expense report
 
-## Collective dashboard
+## Separate reports
 
-Generate one Coinbase + Numerai summary from their latest saved snapshots:
+Build independent Coinbase and Numerai pages from their latest saved snapshots:
 
 ```powershell
 python .\scripts\workflow_dashboard.py
 Start-Process .\src\artifacts\report.html
 ```
 
-The report includes Coinbase holdings/activity and all four Numerai views:
-account performance, `kaijo_model_01`, the last seven resolved rounds, and the
-next seven resolving rounds. Static trend charts cover NMR returns, daily model
-reputation, resolved-round scores, and provisional resolving-round scores. Each
-source keeps its own capture timestamp and units; NMR and USDC are not added.
+The top-level page is a short index linking to:
 
-The page is a self-contained local HTML file with embedded PNGs, responsive
-tables and no browser JavaScript or remote assets. Install `requirements.txt`
-to include Matplotlib for headless chart generation. It reads artifacts only;
-it does not fetch live data or need credentials. Run the fetch scripts first
-when you want newer data, then regenerate the combined report. If one source
-has no manifest, its section explains how to fetch it; corrupt or incomplete
-snapshots fail validation and preserve the previous report.
+- `src/artifacts/coinbase/report.html`: holdings, current prices, orders and watchlist.
+- `src/artifacts/numerai/report.html`: account/model performance, round windows and four trend charts.
 
-Outputs default to `src/artifacts/report.html`, `src/artifacts/log.json`, and
-reusable PNG files in `src/artifacts/report_images/`. Content-addressed chart
-files are retained so earlier exports are not overwritten. Use `--artifacts-dir`
-to choose a root containing `coinbase/` and `numerai/`, `--output` for the HTML
-path, or `--log-dir` for logs. Runnable orchestration lives in `scripts/`;
-callable composition, chart and HTML helpers live under `src/commons`, and
-Numerai sections live in `src/numerai/reporting.py`.
+Each report can also be regenerated independently:
 
-For future email composition, call
-`render_workflow_report(coinbase_snapshot, numerai_snapshot, email=True)` from
-`src.commons.workflow_report`. It returns `RenderedReport.html` with `cid:`
-image references and `RenderedReport.images`, a mapping of Content-ID to PNG
-bytes. Core tables and formatting use inline styles; email images can be
-attached by matching Content-ID. The default browser version embeds those PNGs
-instead. No email is sent by this script; transport and email-client rendering
-tests can be added when sending is implemented.
+```powershell
+python .\scripts\coinbase_dashboard.py
+python .\scripts\numerai_dashboard.py
+```
+
+The pages are self-contained local HTML with inline formatting, responsive tables
+and no browser JavaScript or remote assets. Numerai charts are embedded PNGs,
+with reusable files in `src/artifacts/numerai/report_images/`. Install
+`requirements.txt` to include Matplotlib for chart generation. Rendering reads
+verified artifacts only; run the fetch scripts first when newer data is needed.
+Corrupt snapshots fail validation and preserve the previous report. Logs remain
+under the respective artifacts directory; the index command logs to
+`src/artifacts/log.json`.
+
+Runnable orchestration stays under `scripts/`. Rendering, chart and artifact
+helpers remain callable modules under `src/commons`, `src/coinbase` and
+`src/numerai`. Browser templates and the email template share the same source
+sections; the email wrapper uses presentation tables and inline styles.
+
+## Coinbase Gmail dispatch
+
+Preview a Coinbase-only email from the latest saved Coinbase snapshot:
+
+```powershell
+python .\scripts\coinbase_email.py
+```
+
+This creates an `.eml` preview and a JSON receipt in
+`src/artifacts/coinbase/emails/` without connecting to Gmail, even when
+`GMAIL_ENABLED=true`. The email contains HTML and plain-text alternatives;
+it includes the snapshot capture time and does not include Numerai data.
+The subject uses `REPORT_TIMEZONE` (UTC when unset).
+
+To fetch fresh data and explicitly dispatch through Gmail:
+
+```powershell
+python .\scripts\coinbase_account_summary.py
+python .\scripts\coinbase_email.py --send
+```
+
+Sending requires `GMAIL_ENABLED=true`, `GMAIL_USERNAME`, `GMAIL_APP_PASSWORD`,
+and `GMAIL_TO` in the environment or `.env`. `GMAIL_TO` accepts comma-separated
+bare email addresses. The app password is used only when sending; a normal
+Google account password is not supported. Google documents
+[app passwords and their account requirements](https://support.google.com/accounts/answer/185833).
+The sender uses [Gmail SMTP over verified TLS on port 465](https://developers.google.com/workspace/gmail/imap/imap-smtp).
+
+Receipts record `preview`, `accepted`, `partially_accepted`, or
+`failed_or_uncertain`, with message/snapshot IDs and recipient counts rather
+than addresses or SMTP response bodies. SMTP acceptance is not confirmation of
+inbox delivery. There are no automatic retries: if acceptance is uncertain,
+check Sent mail before retrying to avoid duplicate messages. Each explicit
+`--send` invocation creates a new message; no schedule is installed.
+Authentication, partial-refusal and timeout paths are covered with mocked SMTP.
+No Numerai dispatch entry point is provided.
+
+`--artifacts-dir` selects the Coinbase artifact directory and `--log-dir` can
+change the log destination. Mail previews and receipts contain private report
+information and must stay under ignored artifacts. Callable MIME composition
+lives in `src/coinbase/email_report.py`, Gmail transport in `src/gmail`, and
+artifact persistence in `src/commons`.
 
 ## Numerai reporting
 

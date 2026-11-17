@@ -1,7 +1,9 @@
-"""Build a collective Coinbase + Numerai HTML summary from verified snapshots."""
+"""Build independent Coinbase and Numerai reports plus a short navigation page."""
 
 import argparse
 import sys
+import os
+from urllib.parse import quote
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -10,7 +12,10 @@ if __package__ in (None, ""):
 
 from src.commons import load_latest_snapshot
 from src.commons.reporting import save_html_report, save_report_images
-from src.commons.workflow_report import render_workflow_report
+from src.commons.workflow_report import render_report_index
+from src.coinbase.reporting import render_coinbase_report
+from src.commons.reporting import RenderedReport
+from src.numerai.reporting import render_numerai_report
 from src.observability import configure_logging, trace
 
 
@@ -27,13 +32,26 @@ def main(argv: list[str] | None = None) -> int:
             for source in ("coinbase", "numerai"):
                 directory = args.artifacts_dir / source
                 snapshots[source] = load_latest_snapshot(directory, source=source) if (directory / "manifest.json").exists() else None
-            report = render_workflow_report(snapshots["coinbase"], snapshots["numerai"])
-            save_report_images(output.parent / "report_images", report.images)
-            save_html_report(output, report.html)
+            reports = {}
+            if snapshots["coinbase"] is not None:
+                reports["coinbase"] = RenderedReport(render_coinbase_report(snapshots["coinbase"]))
+            if snapshots["numerai"] is not None:
+                reports["numerai"] = render_numerai_report(snapshots["numerai"])
+            links = []
+            for source in reports:
+                path = args.artifacts_dir / source / "report.html"
+                href = quote(Path(os.path.relpath(path, output.parent)).as_posix(), safe="/")
+                links.append((source.title(), href, snapshots[source]["as_of"]))
+            index = render_report_index(links)
+            for source, report in reports.items():
+                directory = args.artifacts_dir / source
+                save_report_images(directory / "report_images", report.images)
+                save_html_report(directory / "report.html", report.html)
+            save_html_report(output, index)
     except (OSError, ValueError, TypeError, KeyError, ArithmeticError) as exc:
         print(f"Workflow dashboard failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Workflow dashboard saved: {output.resolve()}")
+    print(f"Report index saved: {output.resolve()}")
     return 0
 
 

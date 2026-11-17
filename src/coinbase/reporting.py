@@ -206,10 +206,37 @@ def render_coinbase_body(snapshot: dict[str, Any]) -> str:
 
 
 @trace("coinbase.render_report")
-def render_coinbase_report(snapshot: dict[str, Any]) -> str:
+def render_coinbase_report(snapshot: dict[str, Any], *, email: bool = False) -> str:
     return render_document(
         title="Coinbase · Portfolio snapshot", body=render_coinbase_body(snapshot),
         as_of=_date(snapshot["as_of"]), snapshot_id=snapshot["snapshot_id"],
         trace_id=snapshot.get("trace_id") or "Not recorded",
         notes=[REPORT_NOTE],
+        email=email,
     )
+
+
+def render_coinbase_text(snapshot: dict[str, Any]) -> str:
+    """Plain-text alternative for the Coinbase-only email."""
+    data = snapshot["data"]
+    total = sum((_decimal(row["total_value_usdc"]) for row in data["portfolios"]), Decimal(0))
+    previous = sum((_decimal(row["previous_week_value_usdc"]) for row in data["portfolios"]), Decimal(0))
+    lines = ["Coinbase portfolio report", f"Snapshot as of: {_date(snapshot['as_of'])}",
+             f"Total crypto value: {total:,.2f} USDC", f"Seven-day market movement: {total - previous:+,.2f} USDC", ""]
+    for portfolio in data["portfolios"]:
+        lines.append(f"{portfolio['name']}: {portfolio['total_value_usdc']} USDC")
+        for wallet in portfolio["wallets"]:
+            price = wallet.get("current_price_usdc")
+            lines.append(f"  {wallet['currency']}: available {wallet['available_balance']}, held {wallet['hold']}; "
+                         f"value {wallet['value_usdc']} USDC; price {price if price is not None else 'unavailable'} USDC")
+    for key, heading in (("in_progress", "In-progress orders"), ("filled_last_week", "Filled in the last seven days")):
+        orders = data["orders"][key]
+        lines.extend(["", f"{heading}: {len(orders)}"])
+        lines.extend(f"  {row['product_id']} {row['side']} {row['status']}" for row in orders)
+    lines.extend(["", "Watchlist (prices in each product's quote currency)"])
+    for product in data.get("watchlist", []):
+        price = product.get("current_price")
+        lines.append(f"  {product['product_id']}: price {price if price is not None else 'unavailable'}; "
+                     f"24h {product['daily_percent']}%, 7d {product['weekly_percent']}%, 30d {product['monthly_percent']}%")
+    lines.extend(["", REPORT_NOTE, f"Snapshot: {snapshot['snapshot_id']}"])
+    return "\n".join(lines)

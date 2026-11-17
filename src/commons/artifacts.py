@@ -114,6 +114,11 @@ def atomic_write(path: Path, content: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def save_json_artifact(path: Path, data: dict[str, Any]) -> None:
+    """Persist a small structured artifact using the shared JSON encoding rules."""
+    atomic_write(path, _encode(data))
+
+
 @trace("artifacts.save_csv_bundle")
 def save_csv_bundle(directory: Path, tables: dict[str, list[dict[str, Any]]], *,
                     source: str, snapshot_id: str, trace_id: str | None = None) -> Path:

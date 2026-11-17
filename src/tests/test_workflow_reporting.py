@@ -17,9 +17,10 @@ from scripts import workflow_dashboard
 from src.commons import load_latest_snapshot, save_snapshot
 from src.commons.charts import ChartSeries, line_chart
 from src.commons.reporting import embed_report_images
-from src.commons.workflow_report import render_workflow_report
+from src.commons.workflow_report import render_report_index
+from src.coinbase.reporting import render_coinbase_report
 from src.numerai import NumeraiClient
-from src.numerai.reporting import build_numerai_charts, render_numerai_body
+from src.numerai.reporting import build_numerai_charts, render_numerai_body, render_numerai_report
 import test_coinbase_reporting as coinbase_fixtures
 import test_numerai as numerai_fixtures
 
@@ -53,17 +54,22 @@ class WorkflowReportingTests(unittest.TestCase):
         self.coinbase = load_latest_snapshot(self.directory / "coinbase", source="coinbase")
         self.numerai = load_latest_snapshot(self.directory / "numerai", source="numerai")
 
-    def test_combined_report_has_both_sources_and_four_numerai_views(self):
-        report = render_workflow_report(self.coinbase, self.numerai)
-        for title in ("Asset breakdown", "Your watchlist", "Overall account performance", "Model performance",
-                      "Last 7 resolved rounds", "Next 7 resolving rounds"):
+    def test_reports_keep_sources_separate(self):
+        coinbase = render_coinbase_report(self.coinbase)
+        report = render_numerai_report(self.numerai)
+        for title in ("Overall account performance", "Model performance", "Last 7 resolved rounds", "Next 7 resolving rounds"):
             self.assertIn(title, report.html)
-        self.assertIn("13 Nov 2026, 12:00 UTC", report.html)
+            self.assertNotIn(title, coinbase)
+        for title in ("Asset breakdown", "Your watchlist"):
+            self.assertIn(title, coinbase)
+            self.assertNotIn(title, report.html)
+        self.assertNotIn("Coinbase", report.html)
+        self.assertNotIn("Numerai", coinbase)
+        self.assertIn("13 Nov 2026, 12:00 UTC", coinbase)
         self.assertIn("14 Nov 2026, 12:00 UTC", report.html)
-        self.assertIn(self.coinbase["snapshot_id"], report.html)
+        self.assertIn(self.coinbase["snapshot_id"], coinbase)
         self.assertIn(self.numerai["snapshot_id"], report.html)
         self.assertIn("provisional observations, not predictions", report.html)
-        self.assertIn("v1", report.html)
         self.assertIn("data:image/png;base64,", report.html)
         self.assertNotIn('src="cid:', report.html)
         self.assertEqual(len(report.images), 4)
@@ -72,7 +78,7 @@ class WorkflowReportingTests(unittest.TestCase):
     def test_email_mode_retains_cids_and_has_no_active_or_remote_content(self):
         snapshot = deepcopy(self.numerai)
         snapshot["data"]["model"]["name"] = '<script>alert("private")</script>'
-        report = render_workflow_report(self.coinbase, snapshot, email=True)
+        report = render_numerai_report(snapshot, email=True)
         self.assertIn("&lt;script&gt;", report.html)
         self.assertNotIn("data:image/png;base64,", report.html)
         self.assertNotIn('src="cid:', embed_report_images(report))
@@ -110,22 +116,30 @@ class WorkflowReportingTests(unittest.TestCase):
         self.assertTrue(all(series.provisional for series in resolving))
         self.assertEqual({series.label for series in resolving}, {"CORR / v1", "CORR / v2"})
 
-    def test_missing_source_is_explicit_and_both_missing_is_an_error(self):
-        report = render_workflow_report(self.coinbase, None)
-        self.assertIn("No saved snapshot available", report.html)
-        self.assertIn("numerai_account_summary.py", report.html)
-        self.assertEqual(report.images, {})
+    def test_index_only_links_independent_local_reports(self):
+        index = render_report_index([
+            ("Coinbase", "coinbase/report.html", self.coinbase["as_of"]),
+            ("Numerai", "numerai/report.html", self.numerai["as_of"]),
+        ])
+        self.assertIn('href="coinbase/report.html"', index)
+        self.assertIn('href="numerai/report.html"', index)
+        self.assertNotIn("Asset breakdown", index)
+        self.assertNotIn("Overall account performance", index)
         with self.assertRaisesRegex(ValueError, "fetch scripts"):
-            render_workflow_report(None, None)
+            render_report_index([])
+        with self.assertRaises(ValueError):
+            render_report_index([("Unsafe", "javascript:alert(1)", "today")])
 
     def test_cli_keeps_previous_report_when_source_checksum_fails(self):
         argv = ["--artifacts-dir", str(self.directory)]
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             self.assertEqual(workflow_dashboard.main(argv), 0)
             output = self.directory / "report.html"
-            charts = list((self.directory / "report_images").glob("*.png"))
+            charts = list((self.directory / "numerai/report_images").glob("*.png"))
             self.assertEqual(len(charts), 4)
             self.assertTrue(all(path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n") for path in charts))
+            self.assertTrue((self.directory / "coinbase/report.html").is_file())
+            self.assertTrue((self.directory / "numerai/report.html").is_file())
             before = output.read_bytes()
             manifest = json.loads((self.directory / "numerai/manifest.json").read_text())
             source = self.directory / "numerai" / manifest["artifacts"][0]["path"]
@@ -144,6 +158,15 @@ class WorkflowReportingTests(unittest.TestCase):
 
     def test_chart_without_values_is_not_rendered_as_zero(self):
         self.assertIsNone(line_chart([ChartSeries("Missing", [(self.now, None)])], ylabel="Score"))
+
+    def test_numerai_entry_point_needs_only_its_own_source(self):
+        script = Path(__file__).resolve().parents[2] / "scripts/numerai_dashboard.py"
+        result = subprocess.run([sys.executable, "-I", str(script), "--artifacts-dir", str(self.directory / "numerai")],
+                                cwd=self.directory, capture_output=True, text=True, check=False, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        html = (self.directory / "numerai/report.html").read_text(encoding="utf-8")
+        self.assertIn("Overall account performance", html)
+        self.assertNotIn("Coinbase", html)
 
 
 if __name__ == "__main__":

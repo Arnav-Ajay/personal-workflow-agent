@@ -217,7 +217,7 @@ class CoinbaseTests(unittest.TestCase):
     def test_empty_wallet_network_failure_is_not_hidden_as_missing_price(self):
         self.sdk.get_accounts.return_value = response(accounts=[wallet(available="0", hold="0")], has_next=False)
         self.sdk.get_public_product.side_effect = Timeout("network timeout")
-        with self.assertRaisesRegex(CoinbaseClientError, "network timeout"):
+        with self.assertRaisesRegex(CoinbaseClientError, "request failed \\(Timeout\\)"):
             self.client.get_user_portfolios(as_of=NOW)
 
     def test_price_cache_is_shared_by_wallets(self):
@@ -239,9 +239,10 @@ class CoinbaseTests(unittest.TestCase):
 
     def test_network_failure_does_not_trigger_market_fallback(self):
         self.sdk.get_accounts.return_value = response(accounts=[wallet()], has_next=False)
-        self.sdk.get_public_product.side_effect = Timeout("network timeout")
-        with self.assertRaisesRegex(CoinbaseClientError, "network timeout"):
+        self.sdk.get_public_product.side_effect = Timeout("private-token-in-network-error")
+        with self.assertRaisesRegex(CoinbaseClientError, "request failed \\(Timeout\\)") as caught:
             self.client.get_user_portfolios(as_of=NOW)
+        self.assertNotIn("private-token-in-network-error", str(caught.exception))
         self.assertEqual(self.sdk.get_public_product.call_count, 1)
 
     def test_fiat_wallets_are_excluded_with_warning(self):
@@ -314,7 +315,7 @@ class CoinbaseTests(unittest.TestCase):
         with self.assertRaisesRegex(CoinbaseClientError, "accounts"):
             self.client.get_user_portfolios(as_of=NOW)
         self.sdk.get_accounts.side_effect = Timeout("unavailable")
-        with self.assertRaisesRegex(CoinbaseClientError, "unavailable"):
+        with self.assertRaisesRegex(CoinbaseClientError, "request failed \\(Timeout\\)"):
             self.client.get_user_portfolios(as_of=NOW)
 
     def test_empty_portfolio_has_no_percent_change(self):
